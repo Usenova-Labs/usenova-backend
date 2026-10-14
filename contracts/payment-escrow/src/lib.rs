@@ -3,7 +3,7 @@
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
 
 /// PaymentEscrow contract handles secure payment escrow for BYOI services
-/// 
+///
 /// This contract manages payments between service consumers and providers,
 /// ensuring funds are held securely until service delivery is confirmed.
 #[contract]

@@ -8,7 +8,7 @@ on:
 
 env:
   GO_VERSION: '1.21'
-  RUST_VERSION: 'stable'
+  RUST_VERSION: '1.87.0'
 
 jobs:
   go-lint:
@@ -110,7 +110,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.RUST_VERSION }}
+          toolchain: 1.87.0
           components: rustfmt, clippy
 
       - name: Cache Cargo
@@ -122,15 +122,15 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             contracts/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-1.87-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-1.87-
 
       - name: Check formatting
         run: cargo fmt -- --check
 
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
   rust-test:
     name: Rust Test
@@ -145,7 +145,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.RUST_VERSION }}
+          toolchain: 1.87.0
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -156,12 +156,12 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             contracts/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-1.87-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-1.87-
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --verbose --all-targets
 
   rust-build:
     name: Rust Build
@@ -176,7 +176,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.RUST_VERSION }}
+          toolchain: 1.87.0
           targets: wasm32-unknown-unknown
 
       - name: Cache Cargo
@@ -188,12 +188,12 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             contracts/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-1.87-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-1.87-
 
       - name: Build contracts
-        run: cargo build --release --target wasm32-unknown-unknown
+        run: cargo build --release --target wasm32-unknown-unknown --all-targets
 
       - name: Upload contracts
         uses: actions/upload-artifact@v4
@@ -201,3 +201,4 @@ jobs:
           name: smart-contracts
           path: contracts/target/wasm32-unknown-unknown/release/*.wasm
           retention-days: 7
+          if-no-files-found: warn
