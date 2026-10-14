@@ -1,16 +1,16 @@
-# BYOI Platform
+# Usenova
 
 > Deploy and manage always-on backends on your own infrastructure with Stellar payments
 
 ## Overview
 
-BYOI (Bring Your Own Infrastructure) Platform is an open-source system for deploying, managing, and monetizing always-on backend services on user-controlled infrastructure. The platform integrates with the Stellar network for seamless payments and is designed to evolve into a decentralized compute marketplace.
+Usenova is an open-source system for deploying, managing, and monetizing always-on backend services on user-controlled infrastructure. The platform integrates with the Stellar network for seamless payments and is designed to evolve into a decentralized compute marketplace.
 
 **Current Status:** MVP - focused on core infrastructure management and Stellar integration
 
 ## Key Features
 
-- **Bring Your Own Infrastructure**: Deploy on any infrastructure you control (cloud VMs, bare metal, home servers)
+- **Bring Your Own Infrastructure**: Deploy on any infrastructure you control (cloud VMs, bare metal, home servers) for flagship proof of concept, later move to always on free VMs.
 - **Always-On Management**: Intelligent agent ensures your services stay running 24/7
 - **CLI-First Experience**: Simple, powerful command-line interface for all operations
 - **Stellar Integration**: Built-in payment rails using the Stellar blockchain
@@ -119,4 +119,4 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ---
 
-Built with ❤️ for developers who value control over their infrastructure
+Built with ❤️ for developers who have felt the pain of cold start and value control over their infrastructure
