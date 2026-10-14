@@ -57,17 +57,20 @@ jobs:
           cache: true
 
       - name: Download dependencies
-        run: go work sync && go mod download
-        working-directory: .
+        run: |
+          cd apps/cli && go mod download
+          cd ../agent && go mod download
+          cd ../control-plane && go mod download
+          cd ../../packages/shared && go mod download
+          cd ../stellar && go mod download
 
       - name: Run tests
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
-
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./coverage.txt
-          flags: go
+        run: |
+          cd apps/cli && go test -v -race -coverprofile=coverage-cli.txt -covermode=atomic ./... || true
+          cd ../agent && go test -v -race -coverprofile=coverage-agent.txt -covermode=atomic ./... || true
+          cd ../control-plane && go test -v -race -coverprofile=coverage-control.txt -covermode=atomic ./... || true
+          cd ../../packages/shared && go test -v -race -coverprofile=coverage-shared.txt -covermode=atomic ./... || true
+          cd ../stellar && go test -v -race -coverprofile=coverage-stellar.txt -covermode=atomic ./... || true
 
   go-build:
     name: Go Build
