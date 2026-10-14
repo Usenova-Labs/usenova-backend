@@ -1,0 +1,9 @@
+go 1.21
+
+use (
+	./apps/cli
+	./apps/agent
+	./apps/control-plane
+	./packages/shared
+	./packages/stellar
+)
