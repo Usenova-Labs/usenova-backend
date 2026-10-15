@@ -25,9 +25,9 @@ echo "✓ CLI built: $BUILD_DIR/byoi-cli"
 # Build Agent
 echo "Building Agent..."
 cd apps/agent
-go build -ldflags="-X main.version=$VERSION -X main.commit=$COMMIT" -o "../../$BUILD_DIR/byoi-agent"
+go build -ldflags="-X main.version=$VERSION -X main.commit=$COMMIT" -o "../../$BUILD_DIR/usenova-agent"
 cd ../..
-echo "✓ Agent built: $BUILD_DIR/byoi-agent"
+echo "✓ Agent built: $BUILD_DIR/usenova-agent"
 
 # Build Control Plane
 echo "Building Control Plane..."

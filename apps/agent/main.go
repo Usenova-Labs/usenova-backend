@@ -6,8 +6,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/sirupsen/logrus"
+
+	"github.com/byoi-platform/agent/internal/agent"
+	"github.com/byoi-platform/agent/internal/config"
 )
 
 var (
@@ -23,32 +27,53 @@ func main() {
 	log.WithFields(logrus.Fields{
 		"version": version,
 		"commit":  commit,
-	}).Info("BYOI Agent starting")
+	}).Info("Usenova Agent starting")
 
+	// Load configuration
+	cfg, err := config.Load(version)
+	if err != nil {
+		log.WithError(err).Fatal("Failed to load configuration")
+	}
+
+	// Set log level based on environment
+	if os.Getenv("DEBUG") != "" {
+		log.SetLevel(logrus.DebugLevel)
+		log.Debug("Debug logging enabled")
+	}
+
+	// Create main context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle shutdown signals
+	// Create and start the agent
+	agentInstance := agent.New(cfg, log)
+
+	// Start the agent
+	if err := agentInstance.Start(ctx); err != nil {
+		log.WithError(err).Fatal("Failed to start agent")
+	}
+
+	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	go func() {
-		sig := <-sigChan
-		log.WithField("signal", sig).Info("Received shutdown signal")
-		cancel()
-	}()
+	// Wait for shutdown signal
+	sig := <-sigChan
+	log.WithField("signal", sig).Info("Received shutdown signal, starting graceful shutdown...")
 
-	// TODO: Initialize agent components
-	// - Connect to control plane
-	// - Start health check loop
-	// - Monitor local services
-	// - Report metrics
+	// Cancel context to signal shutdown
+	cancel()
 
-	log.Info("BYOI Agent ready")
+	// Create shutdown context with timeout
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
 
-	<-ctx.Done()
-	log.Info("BYOI Agent shutting down")
+	// Stop the agent
+	if err := agentInstance.Stop(shutdownCtx); err != nil {
+		log.WithError(err).Error("Error during agent shutdown")
+		os.Exit(1)
+	}
 
-	// TODO: Graceful shutdown
+	log.Info("Agent shutdown complete")
 	fmt.Println("Agent stopped")
 }
