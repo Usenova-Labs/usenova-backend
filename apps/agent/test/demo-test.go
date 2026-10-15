@@ -1,3 +1,4 @@
+// Demo test for Usenova Agent - run with: go run test/demo-test.go
 package main
 
 import (
