@@ -18,32 +18,32 @@ func main() {
 
 	// Test 1: Configuration Loading
 	fmt.Println("📝 Test 1: Configuration Management")
-	
+
 	// Set up test environment
 	cfg := &config.Config{
 		ControlPlaneURL:   "http://demo-server:8080",
 		AgentToken:        "demo-token-123",
-		AgentID:           "demo-agent-456", 
+		AgentID:           "demo-agent-456",
 		HeartbeatInterval: 10 * time.Second,
 		Version:           "demo-v1.0.0",
 	}
-	
+
 	fmt.Printf("   ✅ Control Plane URL: %s\n", cfg.ControlPlaneURL)
-	fmt.Printf("   ✅ Agent ID: %s\n", cfg.AgentID) 
+	fmt.Printf("   ✅ Agent ID: %s\n", cfg.AgentID)
 	fmt.Printf("   ✅ Heartbeat Interval: %v\n", cfg.HeartbeatInterval)
 	fmt.Printf("   ✅ Version: %s\n", cfg.Version)
 	fmt.Println()
 
 	// Test 2: Agent Creation
 	fmt.Println("🤖 Test 2: Agent Initialization")
-	
+
 	logger := logrus.New()
 	logger.SetLevel(logrus.InfoLevel)
 	logger.SetFormatter(&logrus.TextFormatter{
 		DisableTimestamp: true,
 		ForceColors:      true,
 	})
-	
+
 	agentInstance := agent.New(cfg, logger)
 	fmt.Println("   ✅ Agent instance created successfully")
 	fmt.Printf("   ✅ Agent Status: %+v\n", agentInstance.GetStatus())
@@ -52,11 +52,11 @@ func main() {
 	// Test 3: Demonstrate Network Resilience
 	fmt.Println("🌐 Test 3: Network Resilience")
 	fmt.Println("   Testing what happens when Control Plane is unreachable...")
-	
+
 	// This will fail (no server running), but shows retry logic
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	fmt.Println("   Attempting to start agent (will show retry logic)...")
 	err := agentInstance.Start(ctx)
 	if err != nil {
@@ -67,7 +67,7 @@ func main() {
 
 	// Test 4: Configuration Validation
 	fmt.Println("⚙️  Test 4: Configuration Validation")
-	
+
 	testConfigs := []struct {
 		name        string
 		setupEnv    func()
@@ -88,7 +88,7 @@ func main() {
 			shouldError: true,
 		},
 	}
-	
+
 	for _, test := range testConfigs {
 		fmt.Printf("   Testing: %s\n", test.name)
 		if test.shouldError {
@@ -101,11 +101,11 @@ func main() {
 
 	// Test 5: Docker Capability Detection
 	fmt.Println("🐳 Test 5: Capability Detection")
-	
+
 	// Check if Docker is available
 	_, err = http.Get("http://localhost:2375") // Docker daemon port
 	dockerAvailable := err == nil
-	
+
 	fmt.Printf("   Docker available: %v\n", dockerAvailable)
 	fmt.Println("   ✅ Capability detection working")
 	fmt.Println()
@@ -114,7 +114,7 @@ func main() {
 	fmt.Println()
 	fmt.Println("📋 Summary:")
 	fmt.Println("   ✅ Configuration management works")
-	fmt.Println("   ✅ Agent initialization works") 
+	fmt.Println("   ✅ Agent initialization works")
 	fmt.Println("   ✅ Network error handling works")
 	fmt.Println("   ✅ Validation logic works")
 	fmt.Println("   ✅ Capability detection works")

@@ -48,7 +48,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📝 Registration request from %s", r.RemoteAddr)
-	
+
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -93,14 +93,14 @@ func handleAgentRequests(w http.ResponseWriter, r *http.Request) {
 	// Parse agent ID from URL path
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/agents/")
 	parts := strings.Split(path, "/")
-	
+
 	if len(parts) != 2 || parts[1] != "heartbeat" {
 		http.NotFound(w, r)
 		return
 	}
-	
+
 	agentID := parts[0]
-	
+
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -125,13 +125,13 @@ func handleAgentRequests(w http.ResponseWriter, r *http.Request) {
 
 	// Log heartbeat (less verbose)
 	uptimeSeconds := int(req.Status.Uptime.Seconds())
-	log.Printf("💓 Heartbeat from %s: uptime=%ds, services=%d", 
+	log.Printf("💓 Heartbeat from %s: uptime=%ds, services=%d",
 		agentID, uptimeSeconds, req.Status.RunningServices)
 
 	// Send success response
 	w.Header().Set("Content-Type", "application/json")
 	response := controlplane.HeartbeatResponse{
-		Status: "ok",
+		Status:  "ok",
 		Message: "Heartbeat received",
 	}
 	json.NewEncoder(w).Encode(response)

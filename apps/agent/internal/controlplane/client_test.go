@@ -114,7 +114,7 @@ func TestClient_SendHeartbeat(t *testing.T) {
 			if r.Method != "POST" {
 				t.Errorf("Expected POST, got %s", r.Method)
 			}
-			
+
 			expectedPath := "/api/v1/agents/test-agent-123/heartbeat"
 			if r.URL.Path != expectedPath {
 				t.Errorf("Expected %s, got %s", expectedPath, r.URL.Path)
@@ -143,7 +143,7 @@ func TestClient_SendHeartbeat(t *testing.T) {
 			// Send success response
 			w.Header().Set("Content-Type", "application/json")
 			response := HeartbeatResponse{
-				Status: "ok",
+				Status:  "ok",
 				Message: "Heartbeat received",
 			}
 			json.NewEncoder(w).Encode(response)
