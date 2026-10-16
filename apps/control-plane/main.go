@@ -9,7 +9,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/byoi-platform/control-plane/internal/agent"
+	"github.com/byoi-platform/control-plane/internal/server"
 	"github.com/sirupsen/logrus"
 )
 
@@ -26,34 +27,34 @@ func main() {
 	log.WithFields(logrus.Fields{
 		"version": version,
 		"commit":  commit,
-	}).Info("BYOI Control Plane starting")
+	}).Info("Usenova Control Plane starting")
 
-	// Setup HTTP server
-	router := gin.Default()
+	// Initialize agent store
+	agentStore := agent.NewAgentStore()
+	log.Info("Agent store initialized")
 
-	// Health check endpoint
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "healthy",
-			"version": version,
-		})
-	})
+	// Initialize agent handler
+	agentHandler := agent.NewHandler(agentStore, log)
 
-	// TODO: Add API routes
-	// - Agent registration
-	// - Service management
-	// - Payment webhooks
-	// - Metrics collection
+	// Setup HTTP server with all routes
+	srv := server.NewServer(agentHandler, log)
 
-	srv := &http.Server{
+	httpServer := &http.Server{
 		Addr:    ":8080",
-		Handler: router,
+		Handler: srv.GetRouter(),
 	}
 
 	// Start server in goroutine
 	go func() {
 		log.Info("Control Plane listening on :8080")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Info("Available endpoints:")
+		log.Info("  GET  /health")
+		log.Info("  POST /api/v1/agents/register")
+		log.Info("  POST /api/v1/agents/:agentID/heartbeat")
+		log.Info("  GET  /api/v1/agents")
+		log.Info("  GET  /api/v1/agents/:agentID")
+		
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)
 		}
 	}()
@@ -69,7 +70,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := httpServer.Shutdown(ctx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}
 
