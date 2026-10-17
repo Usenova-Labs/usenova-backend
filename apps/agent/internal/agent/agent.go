@@ -8,14 +8,20 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/byoi-platform/agent/internal/api"
 	"github.com/byoi-platform/agent/internal/config"
 	"github.com/byoi-platform/agent/internal/controlplane"
+	"github.com/byoi-platform/agent/internal/docker"
+	"github.com/byoi-platform/agent/internal/runtime"
 )
 
 // Agent represents the main agent orchestrator
 type Agent struct {
 	config         *config.Config
 	controlPlane   *controlplane.Client
+	dockerClient   *docker.Client
+	runtimeMgr     *runtime.Manager
+	apiSrv         *api.Server
 	log            *logrus.Logger
 	heartbeatStop  chan struct{}
 	heartbeatDone  sync.WaitGroup
@@ -26,9 +32,38 @@ type Agent struct {
 func New(cfg *config.Config, log *logrus.Logger) *Agent {
 	controlPlaneClient := controlplane.NewClient(cfg.ControlPlaneURL, cfg.AgentToken, log)
 
+	// Docker client. Failure here is non-fatal: the daemon may simply not be
+	// running yet; capability detection and deploys will report/handle it.
+	dockerClient, err := docker.NewClient(log)
+	if err != nil {
+		log.WithError(err).Warn("Failed to create Docker client; Docker features disabled")
+		dockerClient = nil
+	}
+
+	var runtimeMgr *runtime.Manager
+	if dockerClient != nil {
+		runtimeMgr = runtime.NewManager(dockerClient, log)
+	}
+
+	// Feed real capability + service count into heartbeats/registration.
+	controlPlaneClient.SetDockerDetector(func(ctx context.Context) bool {
+		if dockerClient == nil {
+			return false
+		}
+		return dockerClient.IsAvailable(ctx)
+	})
+	controlPlaneClient.SetServicesCounter(func() int {
+		if runtimeMgr == nil {
+			return 0
+		}
+		return runtimeMgr.RunningCount()
+	})
+
 	return &Agent{
 		config:        cfg,
 		controlPlane:  controlPlaneClient,
+		dockerClient:  dockerClient,
+		runtimeMgr:    runtimeMgr,
 		log:           log,
 		heartbeatStop: make(chan struct{}),
 	}
@@ -40,6 +75,30 @@ func (a *Agent) Start(ctx context.Context) error {
 		"config": a.config.String(),
 	}).Info("Starting Usenova Agent")
 
+	// Start the runtime manager (health monitors + reconcile loop) before
+	// registration so the first heartbeat already reports real counts.
+	if a.runtimeMgr != nil {
+		if err := a.runtimeMgr.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start runtime manager: %w", err)
+		}
+	} else {
+		a.log.Warn("Runtime manager not available (no Docker client)")
+	}
+
+	// Start optional local control API (loopback-only, token required).
+	if a.config.APIAddr != "" && a.runtimeMgr != nil {
+		srv, err := api.NewServer(a.config.APIAddr, a.config.APIToken, a.runtimeMgr, a.log)
+		if err != nil {
+			return fmt.Errorf("failed to configure local control API: %w", err)
+		}
+		if err := srv.Start(); err != nil {
+			return fmt.Errorf("failed to start local control API: %w", err)
+		}
+		a.apiSrv = srv
+	} else if a.config.APIAddr != "" && a.runtimeMgr == nil {
+		a.log.Warn("Local control API requested but runtime manager unavailable; skipping API start")
+	}
+
 	// Register with control plane
 	if err := a.register(ctx); err != nil {
 		return fmt.Errorf("registration failed: %w", err)
@@ -48,11 +107,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	// Start heartbeat loop
 	a.startHeartbeat(ctx)
 
-	// TODO: Initialize other agent components
-	// - Docker integration
-	// - Service manager
-	// - Health check system
-	// - Metrics collection
+	// TODO: Metrics collection, control-plane deploy command channel
 
 	a.log.Info("Usenova Agent started successfully")
 	return nil
@@ -81,13 +136,38 @@ func (a *Agent) Stop(ctx context.Context) error {
 		a.log.Warn("Heartbeat stop timed out after 5 seconds")
 	}
 
-	// TODO: Cleanup other resources
-	// - Stop running services
-	// - Close Docker connections
-	// - Cleanup temporary files
+	// Stop local control API first to release network resources.
+	if a.apiSrv != nil {
+		shutdownCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		if err := a.apiSrv.Shutdown(shutdownCtx); err != nil {
+			a.log.WithError(err).Warn("Local control API shutdown failed")
+		}
+		cancel()
+	}
+
+	// Stop health monitors and reconcile loop.
+	// Managed containers are left running: the Docker restart policy keeps
+	// them alive across agent restarts. TODO: optional graceful "stop
+	// services on agent shutdown" mode via config.
+	if a.runtimeMgr != nil {
+		a.runtimeMgr.Stop(ctx)
+	}
+
+	// Close Docker connection
+	if a.dockerClient != nil {
+		if err := a.dockerClient.Close(); err != nil {
+			a.log.WithError(err).Warn("Failed to close Docker client")
+		}
+	}
 
 	a.log.Info("Usenova Agent stopped")
 	return nil
+}
+
+// RuntimeManager exposes the service lifecycle manager (for CLI / future
+// control-plane deploy commands).
+func (a *Agent) RuntimeManager() *runtime.Manager {
+	return a.runtimeMgr
 }
 
 // register handles the registration process with retry logic
@@ -176,10 +256,23 @@ func (a *Agent) GetAgentID() string {
 
 // GetStatus returns current agent status
 func (a *Agent) GetStatus() map[string]interface{} {
-	// TODO: Implement comprehensive status reporting
+	running := 0
+	if a.runtimeMgr != nil {
+		running = a.runtimeMgr.RunningCount()
+	}
+
+	dockerAvailable := false
+	if a.dockerClient != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		dockerAvailable = a.dockerClient.IsAvailable(ctx)
+		cancel()
+	}
+
 	return map[string]interface{}{
-		"agent_id":   a.registrationID,
-		"registered": a.registrationID != "",
-		"version":    a.config.Version,
+		"agent_id":         a.registrationID,
+		"registered":       a.registrationID != "",
+		"version":          a.config.Version,
+		"docker_available": dockerAvailable,
+		"running_services": running,
 	}
 }

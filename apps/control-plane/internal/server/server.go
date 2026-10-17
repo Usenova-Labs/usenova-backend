@@ -10,9 +10,9 @@ import (
 
 // Server holds the HTTP server dependencies
 type Server struct {
-	router *gin.Engine
+	router       *gin.Engine
 	agentHandler *agent.Handler
-	logger *logrus.Logger
+	logger       *logrus.Logger
 }
 
 // NewServer creates a new HTTP server with all routes configured
@@ -51,8 +51,8 @@ func (s *Server) setupRoutes() {
 		{
 			agents.POST("/register", s.agentHandler.RegisterAgent)
 			agents.POST("/:agentID/heartbeat", s.agentHandler.HandleHeartbeat)
-			agents.GET("", s.agentHandler.ListAgents)           // Bonus endpoint
-			agents.GET("/:agentID", s.agentHandler.GetAgent)    // Bonus endpoint
+			agents.GET("", s.agentHandler.ListAgents)        // Bonus endpoint
+			agents.GET("/:agentID", s.agentHandler.GetAgent) // Bonus endpoint
 		}
 
 		// TODO: Add other API groups

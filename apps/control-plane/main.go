@@ -53,7 +53,7 @@ func main() {
 		log.Info("  POST /api/v1/agents/:agentID/heartbeat")
 		log.Info("  GET  /api/v1/agents")
 		log.Info("  GET  /api/v1/agents/:agentID")
-		
+
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)
 		}

@@ -1,8 +1,13 @@
 package agent
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // AgentCapabilities represents what this agent can do
@@ -15,14 +20,14 @@ type AgentCapabilities struct {
 
 // Agent represents a registered agent in the system
 type Agent struct {
-	AgentID         string            `json:"agent_id"`
-	Hostname        string            `json:"hostname"`
-	Version         string            `json:"version"`
-	Capabilities    AgentCapabilities `json:"capabilities"`
-	LastHeartbeat   time.Time         `json:"last_heartbeat"`
-	RegistrationTime time.Time        `json:"registration_time"`
-	Status          AgentStatus       `json:"status,omitempty"`
-	SessionToken    string            `json:"session_token,omitempty"`
+	AgentID          string            `json:"agent_id"`
+	Hostname         string            `json:"hostname"`
+	Version          string            `json:"version"`
+	Capabilities     AgentCapabilities `json:"capabilities"`
+	LastHeartbeat    time.Time         `json:"last_heartbeat"`
+	RegistrationTime time.Time         `json:"registration_time"`
+	Status           AgentStatus       `json:"status,omitempty"`
+	SessionToken     string            `json:"session_token,omitempty"`
 }
 
 // AgentStatus represents current agent status information
@@ -53,25 +58,41 @@ func (s *AgentStore) RegisterAgent(agentID, hostname, version string, capabiliti
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	
-	// Generate agent ID if not provided
+
+	// Generate agent ID if not provided.
 	if agentID == "" {
-		// TODO: Use proper UUID generation
-		agentID = "agent-" + time.Now().Format("20060102150405")
+		agentID = uuid.NewString()
+	}
+
+	// Session token used to authenticate this agent on subsequent requests.
+	// TODO: replace with a signed, expiring JWT (and persist only a hash) once
+	// the control plane has auth middleware.
+	sessionToken, err := generateSessionToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate session token: %w", err)
 	}
 
 	agent := &Agent{
-		AgentID:         agentID,
-		Hostname:        hostname,
-		Version:         version,
-		Capabilities:    capabilities,
+		AgentID:          agentID,
+		Hostname:         hostname,
+		Version:          version,
+		Capabilities:     capabilities,
 		RegistrationTime: now,
-		LastHeartbeat:   now,
-		SessionToken:    "token-" + agentID, // TODO: Use proper JWT or session token
+		LastHeartbeat:    now,
+		SessionToken:     sessionToken,
 	}
 
 	s.agents[agentID] = agent
 	return agent, nil
+}
+
+// generateSessionToken returns a cryptographically random 256-bit token.
+func generateSessionToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // UpdateHeartbeat updates an agent's last heartbeat time and status

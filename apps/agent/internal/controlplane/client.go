@@ -15,6 +15,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// DockerDetector reports whether a Docker daemon is reachable.
+type DockerDetector func(ctx context.Context) bool
+
+// ServicesCounter reports how many services the agent currently manages.
+type ServicesCounter func() int
+
 // Client handles communication with the Control Plane API
 type Client struct {
 	baseURL    string
@@ -23,6 +29,11 @@ type Client struct {
 	httpClient *http.Client
 	log        *logrus.Logger
 	startTime  time.Time
+
+	// Injected by the agent at startup so the control plane client stays
+	// decoupled from Docker/runtime internals.
+	dockerDetector  DockerDetector
+	servicesCounter ServicesCounter
 }
 
 // NewClient creates a new Control Plane API client
@@ -172,10 +183,28 @@ func (c *Client) makeRequest(ctx context.Context, method, endpoint string, reque
 	return nil
 }
 
+// SetDockerDetector injects the Docker availability probe used during
+// registration capability reporting.
+func (c *Client) SetDockerDetector(d DockerDetector) {
+	c.dockerDetector = d
+}
+
+// SetServicesCounter injects the source of truth for the running services
+// count reported in heartbeats.
+func (c *Client) SetServicesCounter(s ServicesCounter) {
+	c.servicesCounter = s
+}
+
 // hasDocker checks if Docker is available on this system
 func (c *Client) hasDocker() bool {
-	// TODO: Implement proper Docker detection
-	// For now, just check if docker command exists
+	if c.dockerDetector != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return c.dockerDetector(ctx)
+	}
+
+	// Fallback: check if docker CLI exists (agent was started without a
+	// Docker detector wired in, e.g. in unit tests).
 	_, err := os.Stat("/usr/bin/docker")
 	if err == nil {
 		return true
@@ -186,8 +215,9 @@ func (c *Client) hasDocker() bool {
 
 // getRunningServicesCount returns the number of services currently managed by this agent
 func (c *Client) getRunningServicesCount() int {
-	// TODO: Implement actual service counting
-	// This will be connected to the service manager later
+	if c.servicesCounter != nil {
+		return c.servicesCounter()
+	}
 	return 0
 }
 
