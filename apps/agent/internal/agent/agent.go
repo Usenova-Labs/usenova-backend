@@ -8,6 +8,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/byoi-platform/agent/internal/api"
 	"github.com/byoi-platform/agent/internal/config"
 	"github.com/byoi-platform/agent/internal/controlplane"
 	"github.com/byoi-platform/agent/internal/docker"
@@ -20,6 +21,7 @@ type Agent struct {
 	controlPlane   *controlplane.Client
 	dockerClient   *docker.Client
 	runtimeMgr     *runtime.Manager
+	apiSrv         *api.Server
 	log            *logrus.Logger
 	heartbeatStop  chan struct{}
 	heartbeatDone  sync.WaitGroup
@@ -83,6 +85,20 @@ func (a *Agent) Start(ctx context.Context) error {
 		a.log.Warn("Runtime manager not available (no Docker client)")
 	}
 
+	// Start optional local control API (loopback-only, token required).
+	if a.config.APIAddr != "" && a.runtimeMgr != nil {
+		srv, err := api.NewServer(a.config.APIAddr, a.config.APIToken, a.runtimeMgr, a.log)
+		if err != nil {
+			return fmt.Errorf("failed to configure local control API: %w", err)
+		}
+		if err := srv.Start(); err != nil {
+			return fmt.Errorf("failed to start local control API: %w", err)
+		}
+		a.apiSrv = srv
+	} else if a.config.APIAddr != "" && a.runtimeMgr == nil {
+		a.log.Warn("Local control API requested but runtime manager unavailable; skipping API start")
+	}
+
 	// Register with control plane
 	if err := a.register(ctx); err != nil {
 		return fmt.Errorf("registration failed: %w", err)
@@ -118,6 +134,15 @@ func (a *Agent) Stop(ctx context.Context) error {
 		a.log.Warn("Heartbeat stop timed out")
 	case <-time.After(5 * time.Second):
 		a.log.Warn("Heartbeat stop timed out after 5 seconds")
+	}
+
+	// Stop local control API first to release network resources.
+	if a.apiSrv != nil {
+		shutdownCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		if err := a.apiSrv.Shutdown(shutdownCtx); err != nil {
+			a.log.WithError(err).Warn("Local control API shutdown failed")
+		}
+		cancel()
 	}
 
 	// Stop health monitors and reconcile loop.

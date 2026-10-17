@@ -12,6 +12,8 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/errdefs"
+	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/sirupsen/logrus"
 )
 
@@ -58,16 +60,23 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// PullImage pulls an image from a registry
+// PullImage pulls an image from a registry.
+//
+// ImagePull reports per-layer failures as JSON records inside the returned
+// stream, not necessarily through the method's error return. We must decode the
+// stream and surface those errors, otherwise a failed pull can look successful
+// and run a stale local image instead. Registry credentials are never logged.
 func (c *Client) PullImage(ctx context.Context, image string, authConfig *types.AuthConfig) error {
+	// Only the image reference is logged: authConfig carries credentials.
 	c.log.WithField("image", image).Info("Pulling image")
 
 	var opts types.ImagePullOptions
 	if authConfig != nil {
 		encodedAuth, err := encodeAuthConfig(authConfig)
-		if err == nil {
-			opts.RegistryAuth = encodedAuth
+		if err != nil {
+			return fmt.Errorf("failed to encode registry credentials for %s: %w", image, err)
 		}
+		opts.RegistryAuth = encodedAuth
 	}
 
 	reader, err := c.cli.ImagePull(ctx, image, opts)
@@ -76,10 +85,21 @@ func (c *Client) PullImage(ctx context.Context, image string, authConfig *types.
 	}
 	defer reader.Close()
 
-	// Read the pull output to ensure completion
-	_, err = io.Copy(io.Discard, reader)
-	if err != nil {
-		return fmt.Errorf("error reading pull output: %w", err)
+	// Decode the pull stream so in-band errors are not swallowed.
+	dec := json.NewDecoder(reader)
+	for {
+		var msg jsonmessage.JSONMessage
+		if err := dec.Decode(&msg); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("error reading pull output for %s: %w", image, err)
+		}
+		if msg.Error != nil {
+			return fmt.Errorf("error pulling image %s: %s", image, msg.Error.Message)
+		}
+		// Progress/status messages are intentionally not logged verbosely to
+		// avoid emitting auxiliary registry details.
 	}
 
 	c.log.WithField("image", image).Info("Image pulled successfully")
@@ -97,7 +117,7 @@ func (c *Client) CreateContainer(ctx context.Context, cfg ContainerConfig) (stri
 
 	c.log.WithFields(logrus.Fields{
 		"name": cfg.Name,
-		"id":   resp.ID[:12],
+		"id":   shortID(resp.ID),
 	}).Info("Container created")
 	return resp.ID, nil
 }
@@ -121,6 +141,11 @@ func (c *Client) StopContainer(ctx context.Context, containerID string, timeout 
 	stopTimeout := int(timeout.Seconds())
 	err := c.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &stopTimeout})
 	if err != nil {
+		// Idempotent: stopping a container that is already gone is success.
+		if errdefs.IsNotFound(err) {
+			c.log.WithField("id", shortID(containerID)).Debug("Container already gone; nothing to stop")
+			return nil
+		}
 		return fmt.Errorf("failed to stop container %s: %w", containerID, err)
 	}
 
@@ -150,6 +175,11 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string, force 
 		RemoveVolumes: false,
 	})
 	if err != nil {
+		// Idempotent: removing a container that is already gone is success.
+		if errdefs.IsNotFound(err) {
+			c.log.WithField("id", shortID(containerID)).Debug("Container already gone; nothing to remove")
+			return nil
+		}
 		return fmt.Errorf("failed to remove container %s: %w", containerID, err)
 	}
 

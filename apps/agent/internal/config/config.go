@@ -16,6 +16,10 @@ type Config struct {
 	AgentID           string
 	HeartbeatInterval time.Duration
 	Version           string
+
+	// Local control API (optional, disabled unless API_ADDR is set).
+	APIAddr  string
+	APIToken string
 }
 
 // Load reads configuration from environment variables
@@ -34,6 +38,16 @@ func Load(version string) (*Config, error) {
 	config.AgentToken = os.Getenv("AGENT_TOKEN")
 	if config.AgentToken == "" {
 		return nil, fmt.Errorf("AGENT_TOKEN is required")
+	}
+
+	// Optional: local control API. Disabled by default. When enabled it must
+	// bind to loopback and require a token (enforced by the api package).
+	config.APIAddr = os.Getenv("API_ADDR")
+	if config.APIAddr != "" {
+		config.APIToken = os.Getenv("API_TOKEN")
+		if config.APIToken == "" {
+			return nil, fmt.Errorf("API_TOKEN is required when API_ADDR is set")
+		}
 	}
 
 	// Optional: Agent ID (generate if not provided)
@@ -74,6 +88,10 @@ func Load(version string) (*Config, error) {
 
 // String returns a string representation of the config (without sensitive data)
 func (c *Config) String() string {
-	return fmt.Sprintf("Config{ControlPlaneURL=%s, AgentID=%s, HeartbeatInterval=%v, Version=%s}",
-		c.ControlPlaneURL, c.AgentID, c.HeartbeatInterval, c.Version)
+	api := "disabled"
+	if c.APIAddr != "" {
+		api = c.APIAddr
+	}
+	return fmt.Sprintf("Config{ControlPlaneURL=%s, AgentID=%s, HeartbeatInterval=%v, Version=%s, API=%s}",
+		c.ControlPlaneURL, c.AgentID, c.HeartbeatInterval, c.Version, api)
 }

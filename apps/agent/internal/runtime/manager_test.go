@@ -7,6 +7,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/go-connections/nat"
 	"github.com/sirupsen/logrus"
 
 	"github.com/byoi-platform/agent/internal/docker"
@@ -209,12 +210,12 @@ func TestManager_StopAndRemoveService(t *testing.T) {
 
 func TestBuildHealthCheck(t *testing.T) {
 	t.Run("nil when no health config", func(t *testing.T) {
-		if cfg := buildHealthCheck(docker.ServiceSpec{}); cfg != nil {
+		if cfg := buildHealthCheck(docker.ServiceSpec{}, nil); cfg != nil {
 			t.Errorf("expected nil, got %+v", cfg)
 		}
 	})
 
-	t.Run("http maps to published host port", func(t *testing.T) {
+	t.Run("http maps container port to published host port", func(t *testing.T) {
 		cfg := buildHealthCheck(docker.ServiceSpec{
 			Ports: map[string]string{"8080": "80"},
 			HealthCheck: &docker.HealthConfig{
@@ -222,7 +223,7 @@ func TestBuildHealthCheck(t *testing.T) {
 				Port: 80,
 				Path: "/ready",
 			},
-		})
+		}, nil)
 		if cfg == nil {
 			t.Fatal("expected config")
 		}
@@ -231,11 +232,11 @@ func TestBuildHealthCheck(t *testing.T) {
 		}
 	})
 
-	t.Run("tcp maps to published host port", func(t *testing.T) {
+	t.Run("tcp maps container port to published host port", func(t *testing.T) {
 		cfg := buildHealthCheck(docker.ServiceSpec{
-			Ports:       map[string]string{"5432": "5432"},
+			Ports: map[string]string{"5432": "5432"},
 			HealthCheck: &docker.HealthConfig{Type: "tcp", Port: 5432},
-		})
+		}, nil)
 		if cfg == nil {
 			t.Fatal("expected config")
 		}
@@ -244,14 +245,63 @@ func TestBuildHealthCheck(t *testing.T) {
 		}
 	})
 
+	t.Run("actual published port overrides spec", func(t *testing.T) {
+		// Spec asked for host 8080 -> container 80, but Docker published
+		// 49152 -> 80. The probe must target the real host port.
+		cfg := buildHealthCheck(docker.ServiceSpec{
+			Ports:       map[string]string{"8080": "80"},
+			HealthCheck: &docker.HealthConfig{Type: "http", Port: 80, Path: "/health"},
+		}, map[int]int{80: 49152})
+		if cfg == nil {
+			t.Fatal("expected config")
+		}
+		if cfg.Endpoint != "http://127.0.0.1:49152/health" {
+			t.Errorf("expected published port 49152, got %s", cfg.Endpoint)
+		}
+	})
+
+	t.Run("default port picks lowest container port deterministically", func(t *testing.T) {
+		cfg := buildHealthCheck(docker.ServiceSpec{
+			Ports:       map[string]string{"9000": "9000", "9001": "80", "9002": "443"},
+			HealthCheck: &docker.HealthConfig{Type: "tcp"}, // no port specified
+		}, nil)
+		if cfg == nil {
+			t.Fatal("expected config")
+		}
+		if cfg.Port != 9001 { // container port 80 is the lowest
+			t.Errorf("expected host port 9001 for lowest container port, got %d", cfg.Port)
+		}
+	})
+
 	t.Run("nil when no ports available", func(t *testing.T) {
 		cfg := buildHealthCheck(docker.ServiceSpec{
 			HealthCheck: &docker.HealthConfig{Type: "http"},
-		})
+		}, nil)
 		if cfg != nil {
 			t.Errorf("expected nil, got %+v", cfg)
 		}
 	})
+}
+
+func TestPublishedPorts(t *testing.T) {
+	info := &types.ContainerJSON{
+		NetworkSettings: &types.NetworkSettings{
+			NetworkSettingsBase: types.NetworkSettingsBase{
+				Ports: nat.PortMap{
+					"80/tcp":    []nat.PortBinding{{HostPort: "49152"}},
+					"443/tcp":   []nat.PortBinding{{HostPort: "49153"}},
+					"9999/tcp":  nil,
+				},
+			},
+		},
+	}
+	got := publishedPorts(info)
+	if got[80] != 49152 || got[443] != 49153 {
+		t.Errorf("unexpected published ports: %v", got)
+	}
+	if _, ok := got[9999]; ok {
+		t.Error("port with no bindings should be skipped")
+	}
 }
 
 func TestShouldRestart(t *testing.T) {

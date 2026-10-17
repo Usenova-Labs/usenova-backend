@@ -2,7 +2,6 @@ package health
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -48,13 +47,18 @@ type Checker struct {
 
 // NewChecker creates a new health checker
 func NewChecker(log *logrus.Logger) *Checker {
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
 	return &Checker{
 		client: &http.Client{
-			Timeout:   10 * time.Second,
-			Transport: tr,
+			Timeout: 10 * time.Second,
+			// Never follow redirects. A probe must only ever hit the exact
+			// endpoint we configured: following a redirect would let a workload
+			// steer the agent into probing an arbitrary host (SSRF), and a 3xx
+			// is not a healthy status anyway.
+			// TODO: support custom CA / mTLS for probes to self-signed endpoints
+			// via an explicit, opt-in config flag.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 		log: log,
 	}

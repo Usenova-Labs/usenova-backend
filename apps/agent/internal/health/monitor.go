@@ -31,12 +31,14 @@ type Monitor struct {
 	stopCh        chan struct{}
 	stopOnce      sync.Once
 	wg            sync.WaitGroup
+	callbackWG    sync.WaitGroup
 	log           *logrus.Logger
 	onUnhealthy   OnUnhealthyFunc
 	restartPolicy string // "always" or "on-failure"
 	enabled       bool
 	started       bool
 	runCtx        context.Context
+	cancelRun     context.CancelFunc
 }
 
 // NewMonitor creates a new health monitor
@@ -111,7 +113,9 @@ func (m *Monitor) Start(ctx context.Context) {
 		return
 	}
 	m.started = true
-	m.runCtx = ctx
+	runCtx, cancel := context.WithCancel(ctx)
+	m.runCtx = runCtx
+	m.cancelRun = cancel
 	targets := make(map[string]*ServiceHealth, len(m.services))
 	for id, h := range m.services {
 		targets[id] = h
@@ -124,19 +128,57 @@ func (m *Monitor) Start(ctx context.Context) {
 		m.wg.Add(1)
 		go func(id string, h *ServiceHealth) {
 			defer m.wg.Done()
-			m.monitorService(ctx, id, h)
+			m.monitorService(runCtx, id, h)
 		}(serviceID, health)
 	}
 }
 
-// Stop stops the health monitor
+// Stop stops the health monitor. It cancels all in-flight probe work and waits
+// for both probe workers and any restart callbacks to finish, so no
+// container-mutating callback outlives the monitor.
 func (m *Monitor) Stop() {
 	m.stopOnce.Do(func() {
 		m.log.Info("Stopping health monitor")
+		if m.cancelRun != nil {
+			m.cancelRun()
+		}
 		close(m.stopCh)
 		m.wg.Wait()
+		m.callbackWG.Wait()
 		m.log.Info("Health monitor stopped")
 	})
+}
+
+// triggerRestart schedules the on-unhealthy callback. The callback is derived
+// from the monitor's run context so it is cancelled on Stop, and is tracked in
+// callbackWG so Stop can wait for it to complete.
+func (m *Monitor) triggerRestart(runCtx context.Context, serviceID string, health *ServiceHealth) {
+	if m.onUnhealthy == nil {
+		return
+	}
+	if runCtx == nil {
+		runCtx = context.Background()
+	}
+
+	m.callbackWG.Add(1)
+	go func() {
+		defer m.callbackWG.Done()
+
+		restartCtx, cancel := context.WithTimeout(runCtx, 120*time.Second)
+		defer cancel()
+
+		if err := m.onUnhealthy(restartCtx, serviceID); err != nil {
+			m.log.WithError(err).Error("Failed to restart unhealthy service")
+			return
+		}
+
+		m.mu.Lock()
+		health.RestartCount++
+		// Reset consecutive fails after a restart attempt
+		health.ConsecutiveFails = 0
+		m.mu.Unlock()
+		m.log.WithField("service", serviceID).Info("Unhealthy service restarted")
+	}()
 }
 
 // monitorService monitors a single service
@@ -191,45 +233,17 @@ func (m *Monitor) monitorService(ctx context.Context, serviceID string, health *
 				health.ConsecutivePasses = 0
 				health.ConsecutiveFails++
 				// Mark as unhealthy if threshold reached
-				if health.IsHealthy && health.Config.FailureThreshold > 0 {
-					if health.ConsecutiveFails >= health.Config.FailureThreshold {
-						health.IsHealthy = false
-						m.log.WithField("service", serviceID).Warn("Service became unhealthy, triggering restart")
-						if m.onUnhealthy != nil {
-							go func(sid string) {
-								restartCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-								defer cancel()
-								if err := m.onUnhealthy(restartCtx, sid); err != nil {
-									m.log.WithError(err).Error("Failed to restart unhealthy service")
-								} else {
-									m.mu.Lock()
-									health.RestartCount++
-									// Reset consecutive fails after restart attempt
-									health.ConsecutiveFails = 0
-									m.mu.Unlock()
-									m.log.WithField("service", sid).Info("Unhealthy service restarted")
-								}
-							}(serviceID)
+					if health.IsHealthy && health.Config.FailureThreshold > 0 {
+						if health.ConsecutiveFails >= health.Config.FailureThreshold {
+							health.IsHealthy = false
+							m.log.WithField("service", serviceID).Warn("Service became unhealthy, triggering restart")
+							m.triggerRestart(ctx, serviceID, health)
 						}
+					} else if health.IsHealthy && health.Config.FailureThreshold == 0 {
+						// If no threshold specified, restart immediately on any failure
+						health.IsHealthy = false
+						m.triggerRestart(ctx, serviceID, health)
 					}
-				} else if health.IsHealthy && health.Config.FailureThreshold == 0 {
-					// If no threshold specified, restart immediately on any failure
-					health.IsHealthy = false
-					if m.onUnhealthy != nil {
-						go func(sid string) {
-							restartCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-							defer cancel()
-							if err := m.onUnhealthy(restartCtx, sid); err != nil {
-								m.log.WithError(err).Error("Failed to restart unhealthy service")
-							} else {
-								m.mu.Lock()
-								health.RestartCount++
-								health.ConsecutiveFails = 0
-								m.mu.Unlock()
-							}
-						}(serviceID)
-					}
-				}
 			}
 			m.mu.Unlock()
 

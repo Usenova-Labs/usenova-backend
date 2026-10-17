@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"time"
 
 	"github.com/byoi-platform/agent/internal/docker"
@@ -21,6 +22,9 @@ const (
 	ServiceStateFailed ServiceState = "failed"
 	// ServiceStateUnhealthy means the container is running but failing health checks
 	ServiceStateUnhealthy ServiceState = "unhealthy"
+	// ServiceStateRemoved means removal was requested; ownership is retained
+	// until the container is actually gone so it cannot escape management.
+	ServiceStateRemoved ServiceState = "removed"
 )
 
 // RestartPolicy constants (mirror docker policies for agent-side decisions)
@@ -43,6 +47,10 @@ type Service struct {
 	// State is the last observed state
 	State ServiceState
 
+	// DesiredState is the intent: running / stopped / removed. Reconciliation
+	// drives the observed state toward this value.
+	DesiredState ServiceState
+
 	// Health is the derived agent-side health check configuration (nil if none)
 	Health *health.CheckConfig
 
@@ -54,6 +62,14 @@ type Service struct {
 
 	// LastError holds the last error observed for this service, if any
 	LastError error
+
+	// generation is bumped on every intent change (deploy/stop/remove). Long
+	// running operations capture it and only commit if it is still current,
+	// which fences stop/remove against in-flight deploys.
+	generation uint64
+
+	// cancel cancels the in-flight deploy for this incarnation, if any.
+	cancel context.CancelFunc
 }
 
 // ShortID returns a shortened container ID for logging
