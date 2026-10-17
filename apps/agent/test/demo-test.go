@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Demo test for Usenova Agent - run with: go run test/demo-test.go
 package main
 

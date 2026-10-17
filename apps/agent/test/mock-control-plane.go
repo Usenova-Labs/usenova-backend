@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Mock Control Plane server for testing - run with: go run test/mock-control-plane.go
 package main
 
