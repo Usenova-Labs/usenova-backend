@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/byoi-platform/cli/cmd"
 	"github.com/spf13/cobra"
 )
 
@@ -21,7 +22,7 @@ services on your own infrastructure with Stellar payment integration.`,
 		Version: fmt.Sprintf("%s (commit: %s)", version, commit),
 	}
 
-	// TODO: Add subcommands (deploy, status, logs, etc.)
+	rootCmd.AddCommand(cmd.Root())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
