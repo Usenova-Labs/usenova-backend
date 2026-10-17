@@ -15,14 +15,14 @@ type AgentCapabilities struct {
 
 // Agent represents a registered agent in the system
 type Agent struct {
-	AgentID         string            `json:"agent_id"`
-	Hostname        string            `json:"hostname"`
-	Version         string            `json:"version"`
-	Capabilities    AgentCapabilities `json:"capabilities"`
-	LastHeartbeat   time.Time         `json:"last_heartbeat"`
-	RegistrationTime time.Time        `json:"registration_time"`
-	Status          AgentStatus       `json:"status,omitempty"`
-	SessionToken    string            `json:"session_token,omitempty"`
+	AgentID          string            `json:"agent_id"`
+	Hostname         string            `json:"hostname"`
+	Version          string            `json:"version"`
+	Capabilities     AgentCapabilities `json:"capabilities"`
+	LastHeartbeat    time.Time         `json:"last_heartbeat"`
+	RegistrationTime time.Time         `json:"registration_time"`
+	Status           AgentStatus       `json:"status,omitempty"`
+	SessionToken     string            `json:"session_token,omitempty"`
 }
 
 // AgentStatus represents current agent status information
@@ -53,7 +53,7 @@ func (s *AgentStore) RegisterAgent(agentID, hostname, version string, capabiliti
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	
+
 	// Generate agent ID if not provided
 	if agentID == "" {
 		// TODO: Use proper UUID generation
@@ -61,13 +61,13 @@ func (s *AgentStore) RegisterAgent(agentID, hostname, version string, capabiliti
 	}
 
 	agent := &Agent{
-		AgentID:         agentID,
-		Hostname:        hostname,
-		Version:         version,
-		Capabilities:    capabilities,
+		AgentID:          agentID,
+		Hostname:         hostname,
+		Version:          version,
+		Capabilities:     capabilities,
 		RegistrationTime: now,
-		LastHeartbeat:   now,
-		SessionToken:    "token-" + agentID, // TODO: Use proper JWT or session token
+		LastHeartbeat:    now,
+		SessionToken:     "token-" + agentID, // TODO: Use proper JWT or session token
 	}
 
 	s.agents[agentID] = agent

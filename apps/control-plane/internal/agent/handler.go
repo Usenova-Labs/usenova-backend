@@ -49,9 +49,9 @@ func (h *Handler) RegisterAgent(c *gin.Context) {
 	}
 
 	h.logger.WithFields(logrus.Fields{
-		"agent_id":    req.AgentID,
-		"hostname":    req.Hostname,
-		"version":     req.Version,
+		"agent_id":     req.AgentID,
+		"hostname":     req.Hostname,
+		"version":      req.Version,
 		"capabilities": req.Capabilities,
 	}).Info("Registering agent")
 
