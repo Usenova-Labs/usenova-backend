@@ -121,7 +121,7 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		s.writeJSON(w, http.StatusOK, map[string]interface{}{
-			"running": s.mgr.RunningCount(),
+			"running":  s.mgr.RunningCount(),
 			"services": s.mgr.ListServices(),
 		})
 	case http.MethodPost:

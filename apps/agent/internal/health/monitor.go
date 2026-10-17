@@ -233,17 +233,17 @@ func (m *Monitor) monitorService(ctx context.Context, serviceID string, health *
 				health.ConsecutivePasses = 0
 				health.ConsecutiveFails++
 				// Mark as unhealthy if threshold reached
-					if health.IsHealthy && health.Config.FailureThreshold > 0 {
-						if health.ConsecutiveFails >= health.Config.FailureThreshold {
-							health.IsHealthy = false
-							m.log.WithField("service", serviceID).Warn("Service became unhealthy, triggering restart")
-							m.triggerRestart(ctx, serviceID, health)
-						}
-					} else if health.IsHealthy && health.Config.FailureThreshold == 0 {
-						// If no threshold specified, restart immediately on any failure
+				if health.IsHealthy && health.Config.FailureThreshold > 0 {
+					if health.ConsecutiveFails >= health.Config.FailureThreshold {
 						health.IsHealthy = false
+						m.log.WithField("service", serviceID).Warn("Service became unhealthy, triggering restart")
 						m.triggerRestart(ctx, serviceID, health)
 					}
+				} else if health.IsHealthy && health.Config.FailureThreshold == 0 {
+					// If no threshold specified, restart immediately on any failure
+					health.IsHealthy = false
+					m.triggerRestart(ctx, serviceID, health)
+				}
 			}
 			m.mu.Unlock()
 

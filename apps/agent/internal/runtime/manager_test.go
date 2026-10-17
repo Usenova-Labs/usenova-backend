@@ -234,7 +234,7 @@ func TestBuildHealthCheck(t *testing.T) {
 
 	t.Run("tcp maps container port to published host port", func(t *testing.T) {
 		cfg := buildHealthCheck(docker.ServiceSpec{
-			Ports: map[string]string{"5432": "5432"},
+			Ports:       map[string]string{"5432": "5432"},
 			HealthCheck: &docker.HealthConfig{Type: "tcp", Port: 5432},
 		}, nil)
 		if cfg == nil {
@@ -288,9 +288,9 @@ func TestPublishedPorts(t *testing.T) {
 		NetworkSettings: &types.NetworkSettings{
 			NetworkSettingsBase: types.NetworkSettingsBase{
 				Ports: nat.PortMap{
-					"80/tcp":    []nat.PortBinding{{HostPort: "49152"}},
-					"443/tcp":   []nat.PortBinding{{HostPort: "49153"}},
-					"9999/tcp":  nil,
+					"80/tcp":   []nat.PortBinding{{HostPort: "49152"}},
+					"443/tcp":  []nat.PortBinding{{HostPort: "49153"}},
+					"9999/tcp": nil,
 				},
 			},
 		},

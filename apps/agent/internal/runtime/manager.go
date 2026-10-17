@@ -1155,7 +1155,6 @@ func shortID(id string) string {
 	return id
 }
 
-
 // snapshot returns a copy of a service by name.
 func (m *Manager) snapshot(name string) (*Service, bool) {
 	m.mu.RLock()
