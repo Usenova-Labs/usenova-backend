@@ -63,7 +63,7 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 
 ## Quick Start
 
-> **Note**: The platform is in early MVP stage. Installation and usage instructions will be added as components stabilize.
+> **Note**: The CLI works today (see below). Packaged releases, agent installers, and payment features are still forthcoming.
 
 ```bash
 # Build the CLI from source (bin/ is gitignored; subshell keeps you at the repo root)
