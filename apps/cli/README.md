@@ -6,8 +6,7 @@ stop services running on infrastructure you control.
 ## Build
 
 ```bash
-cd apps/cli
-go build -o ../../bin/nova
+(cd apps/cli && go build -o ../../bin/nova)
 ```
 
 Or build everything from the repo root:

@@ -66,11 +66,11 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 > **Note**: The platform is in early MVP stage. Installation and usage instructions will be added as components stabilize.
 
 ```bash
-# Build the CLI from source
-cd apps/cli && go build -o ../../bin/nova
+# Build the CLI from source (subshell keeps you at the repository root)
+(cd apps/cli && go build -o ../../bin/nova)
 
 # Point it at a local agent and deploy
-export USENOVA_API_TOKEN=<agent token>
+export USENOVA_API_TOKEN="<your-agent-token>"
 bin/nova deploy --name web --image nginx:alpine --port 8080:80
 bin/nova status
 ```
