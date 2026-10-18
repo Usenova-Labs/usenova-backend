@@ -22,11 +22,13 @@ Usenova is an open-source system for deploying, managing, and monetizing always-
 The platform consists of three main components:
 
 ### CLI (`apps/cli`)
-Command-line interface for developers and operators to:
+Command-line interface (`nova`) for developers and operators to:
 - Deploy services to their infrastructure
 - Monitor service health and logs
 - Configure payment settings
 - Manage agent lifecycle
+
+See the [CLI quick start](apps/cli/README.md) for build and usage examples.
 
 ### Agent (`apps/agent`)
 Lightweight daemon running on user infrastructure that:
@@ -64,9 +66,16 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 > **Note**: The platform is in early MVP stage. Installation and usage instructions will be added as components stabilize.
 
 ```bash
-# Coming soon
-# Installation, configuration, and deployment examples will be added here
+# Build the CLI from source
+cd apps/cli && go build -o ../../bin/nova
+
+# Point it at a local agent and deploy
+export USENOVA_API_TOKEN=<agent token>
+bin/nova deploy --name web --image nginx:alpine --port 8080:80
+bin/nova status
 ```
+
+See [apps/cli/README.md](apps/cli/README.md) for the full CLI quick start.
 
 ## Development
 
@@ -99,7 +108,7 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for deta
 ## Roadmap
 
 - [x] Project structure and foundation
-- [ ] MVP: CLI with basic deployment commands
+- [x] MVP: CLI with basic deployment commands
 - [ ] MVP: Agent with service lifecycle management
 - [ ] MVP: Control plane API (auth, registration)
 - [ ] MVP: Basic Stellar payment integration
@@ -113,8 +122,8 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ## Community
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/byoi-platform/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/byoi-platform/discussions)
+- **Issues**: [GitHub Issues](https://github.com/Usenova-Labs/usenova-backend/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/Usenova-Labs/usenova-backend/discussions)
 - **Contributing**: See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---

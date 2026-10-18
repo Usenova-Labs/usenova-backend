@@ -111,7 +111,7 @@ The BYOI Platform enables users to deploy and manage always-on backend services 
 ### Service Deployment Flow
 
 ```
-1. User runs: `byoi deploy myservice`
+1. User runs: `nova deploy myservice`
 2. CLI authenticates with Control Plane
 3. CLI packages service config and sends to Control Plane
 4. Control Plane validates config and assigns to Agent

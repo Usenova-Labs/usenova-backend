@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"sort"
 	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/byoi-platform/cli/internal/client"
 	"github.com/spf13/cobra"
@@ -143,6 +147,71 @@ func reconcileDeploy(ctx context.Context, cl *client.Client, name string, err er
 	return fmt.Errorf("deploy not confirmed within %s; check status with: status %s", timeout, name)
 }
 
+// formatPorts renders a host:container port map as a stable, comma-separated
+// list ("8080:80,443:443"), or "-" when unset.
+func formatPorts(ports map[string]string) string {
+	if len(ports) == 0 {
+		return "-"
+	}
+	hosts := make([]string, 0, len(ports))
+	for host := range ports {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	pairs := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		pairs = append(pairs, host+":"+ports[host])
+	}
+	return strings.Join(pairs, ",")
+}
+
+// printServiceTable renders services as an aligned table in text mode.
+func printServiceTable(services []client.Service) {
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tPORTS\tRESTARTS")
+	for _, s := range services {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\n",
+			s.Spec.Name, s.State, s.Spec.Image, formatPorts(s.Spec.Ports), s.RestartCount)
+	}
+	_ = tw.Flush()
+}
+
+// printServiceDetail renders one service as aligned label/value lines.
+func printServiceDetail(s *client.Service) {
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	defer func() { _ = tw.Flush() }()
+	row := func(k, v string) { fmt.Fprintf(tw, "%s\t%s\n", k, v) }
+
+	row("NAME", s.Spec.Name)
+	row("STATE", s.State)
+	row("DESIRED", s.DesiredState)
+	row("IMAGE", s.Spec.Image)
+	row("PORTS", formatPorts(s.Spec.Ports))
+	if len(s.Spec.Env) > 0 {
+		row("ENV", strings.Join(s.Spec.Env, ","))
+	}
+	if s.Spec.RestartPolicy != "" {
+		row("RESTART", s.Spec.RestartPolicy)
+	}
+	if hc := s.Spec.HealthCheck; hc != nil {
+		h := hc.Type
+		if hc.Port > 0 {
+			h += fmt.Sprintf(" port=%d", hc.Port)
+		}
+		if hc.Path != "" {
+			h += fmt.Sprintf(" path=%s", hc.Path)
+		}
+		row("HEALTH", h)
+	}
+	row("RESTARTS", fmt.Sprintf("%d", s.RestartCount))
+	if !s.DeployedAt.IsZero() {
+		row("DEPLOYED", s.DeployedAt.Format(time.RFC3339))
+	}
+	if s.ContainerID != "" {
+		row("CONTAINER", s.ContainerID)
+	}
+}
+
 func statusCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "status [name]",
@@ -161,14 +230,11 @@ func statusCmd() *cobra.Command {
 				if output == "json" {
 					return printJSON(lr)
 				}
-				fmt.Printf("Running: %d\n", lr.Running)
-				for i, s := range lr.Services {
-					b, _ := json.Marshal(s)
-					if i > 0 {
-						fmt.Println("---")
-					}
-					fmt.Println(string(b))
+				if len(lr.Services) == 0 {
+					fmt.Println("No services.")
+					return nil
 				}
+				printServiceTable(lr.Services)
 				return nil
 			}
 			res, err := cl.GetService(ctx, args[0])
@@ -178,8 +244,7 @@ func statusCmd() *cobra.Command {
 			if output == "json" {
 				return printJSON(res)
 			}
-			b, _ := json.MarshalIndent(res, "", "  ")
-			fmt.Println(string(b))
+			printServiceDetail(res)
 			return nil
 		},
 	}
@@ -187,6 +252,8 @@ func statusCmd() *cobra.Command {
 }
 
 func logsCmd() *cobra.Command {
+	// TODO(agent API): implement once the agent exposes
+	// GET /services/{name}/logs (follow, tail, timestamps).
 	c := &cobra.Command{
 		Use:   "logs <name>",
 		Short: "Fetch logs for a service (stub if not exposed)",

@@ -1,4 +1,4 @@
-# Getting Started with BYOI Platform
+# Getting Started with Usenova
 
 > Quick start guide for deploying your first always-on service
 
@@ -16,14 +16,14 @@
 
 ```bash
 # Coming soon: Installation instructions
-# curl -sSL https://get.byoi.dev | sh
+# curl -sSL https://get.usenova.dev | sh
 ```
 
 ### Install the Agent
 
 ```bash
 # Coming soon: Agent installation
-# byoi agent install
+# nova agent install
 ```
 
 ## Quick Start
@@ -32,13 +32,13 @@
 
 ```bash
 # Coming soon
-byoi init my-service
+nova init my-service
 cd my-service
 ```
 
 ### 2. Configure Your Service
 
-Create a `byoi.yml` configuration file:
+Create a `nova.yml` configuration file:
 
 ```yaml
 # Example configuration (format subject to change)
@@ -54,27 +54,27 @@ replicas: 1
 
 ```bash
 # Coming soon
-byoi deploy
+nova deploy
 ```
 
 ### 4. Monitor
 
 ```bash
 # Coming soon
-byoi status
-byoi logs my-service
+nova status
+nova logs my-service
 ```
 
 ## Next Steps
 
 - [Architecture Overview](./architecture.md)
-- [CLI Reference](./cli-reference.md) (coming soon)
+- [CLI Quick Start](../apps/cli/README.md)
 - [Payment Configuration](./payments.md) (coming soon)
 - [Troubleshooting](./troubleshooting.md) (coming soon)
 
 ## Need Help?
 
-- [GitHub Issues](https://github.com/yourusername/byoi-platform/issues)
+- [GitHub Issues](https://github.com/Usenova-Labs/usenova-backend/issues)
 - [Documentation](./README.md)
 - [Contributing Guide](../CONTRIBUTING.md)
 

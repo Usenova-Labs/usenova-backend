@@ -14,11 +14,11 @@ var (
 
 func main() {
 	// cmd.Root() is the executable root so service commands register as
-	// "byoi deploy", "byoi status", ... rather than "byoi usenova deploy".
+	// "nova deploy", "nova status", ...
 	rootCmd := cmd.Root()
-	rootCmd.Use = "byoi"
-	rootCmd.Short = "BYOI Platform CLI - Deploy and manage always-on backends on your own infrastructure"
-	rootCmd.Long = `BYOI Platform CLI provides commands to deploy, manage, and monitor
+	rootCmd.Use = "nova"
+	rootCmd.Short = "Nova CLI - deploy and manage always-on backends on your own infrastructure"
+	rootCmd.Long = `Nova CLI provides commands to deploy, manage, and monitor
 services on your own infrastructure with Stellar payment integration.`
 	rootCmd.Version = fmt.Sprintf("%s (commit: %s)", version, commit)
 
