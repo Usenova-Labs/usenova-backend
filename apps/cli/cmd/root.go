@@ -43,7 +43,7 @@ func getEnv(k, def string) string {
 	return def
 }
 
-func newClient() *client.Client {
+func newClient() (*client.Client, error) {
 	return client.New(agentURL, apiToken, timeout)
 }
 
@@ -67,7 +67,10 @@ func maybeJSON(v any, err error) error {
 }
 
 func run(ctx context.Context, f func(*client.Client, context.Context) (any, error)) error {
-	cl := newClient()
+	cl, err := newClient()
+	if err != nil {
+		return err
+	}
 	v, err := f(cl, ctx)
 	if output == "json" {
 		if err != nil {

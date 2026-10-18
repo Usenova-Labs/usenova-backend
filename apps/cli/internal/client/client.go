@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -23,9 +24,15 @@ type Client struct {
 	http    *http.Client
 }
 
-func New(baseURL, token string, timeout time.Duration) *Client {
+// New builds a client for baseURL. It refuses a credentialed non-loopback
+// plaintext HTTP URL so the bearer token is never sent in cleartext
+// (CWE-319); loopback and https endpoints remain allowed.
+func New(baseURL, token string, timeout time.Duration) (*Client, error) {
 	if baseURL == "" {
 		baseURL = "http://127.0.0.1:9090"
+	}
+	if err := checkTransport(baseURL, token); err != nil {
+		return nil, err
 	}
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -36,7 +43,41 @@ func New(baseURL, token string, timeout time.Duration) *Client {
 		http: &http.Client{
 			Timeout: timeout,
 		},
+	}, nil
+}
+
+// checkTransport rejects a bearer token bound for a non-loopback host over
+// plaintext HTTP. Loopback (127.0.0.0/8, ::1, localhost) and any non-http
+// scheme are accepted; with no token there is no credential to expose.
+func checkTransport(baseURL, token string) error {
+	if token == "" {
+		return nil
 	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("invalid agent URL %q: %w", baseURL, err)
+	}
+	if !strings.EqualFold(u.Scheme, "http") {
+		return nil
+	}
+	if host := u.Hostname(); isLoopbackHost(host) {
+		return nil
+	}
+	return fmt.Errorf("refusing to send the API token over plaintext HTTP to non-loopback host %q: use https:// or a loopback address", u.Host)
+}
+
+// isLoopbackHost reports whether host names a loopback address.
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // ValidateServiceName rejects names that cannot round-trip as a single path

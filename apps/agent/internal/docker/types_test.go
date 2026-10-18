@@ -3,6 +3,7 @@ package docker
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // TestServiceSpecJSONDecodesClientKeys locks the agent API contract: clients
@@ -101,5 +102,83 @@ func TestHealthConfigDecodesLegacyMeta(t *testing.T) {
 	if meta.HealthCheck.Type != "http" || meta.HealthCheck.Path != "/h" ||
 		meta.HealthCheck.Port != 8080 || meta.HealthCheck.Retries != 5 {
 		t.Errorf("HealthCheck = %+v, want legacy values preserved", meta.HealthCheck)
+	}
+}
+
+// TestServiceSpecJSONDecodesLegacyRequestShape covers the top-level request
+// keys clients sent before JSON tags existed. Keys whose folded names do not
+// equal the snake_case tags (HealthCheck, RestartPolicy, DependsOn, and the
+// nested StartPeriod / CPULimit-style fields) would otherwise be silently
+// dropped by encoding/json.
+func TestServiceSpecJSONDecodesLegacyRequestShape(t *testing.T) {
+	legacy := `{
+		"Name": "web",
+		"Image": "nginx:1.25",
+		"RestartPolicy": "unless-stopped",
+		"Ports": {"8080": "80"},
+		"Env": ["A=1"],
+		"Volumes": ["/data:/data"],
+		"Labels": {"team": "core"},
+		"DependsOn": ["db"],
+		"HealthCheck": {"Type": "http", "Path": "/health", "Port": 8080, "StartPeriod": 45000000000, "Retries": 4},
+		"Resources": {"CPULimit": 1000000000, "MemoryLimit": 536870912, "CPUReserve": 500000000, "MemoryReserve": 268435456}
+	}`
+
+	var spec ServiceSpec
+	if err := json.Unmarshal([]byte(legacy), &spec); err != nil {
+		t.Fatalf("unmarshal legacy spec: %v", err)
+	}
+
+	if spec.Name != "web" || spec.Image != "nginx:1.25" {
+		t.Errorf("Name/Image = %q/%q, want web/nginx:1.25", spec.Name, spec.Image)
+	}
+	if spec.RestartPolicy != "unless-stopped" {
+		t.Errorf("RestartPolicy = %q, want legacy RestartPolicy decoded", spec.RestartPolicy)
+	}
+	if len(spec.DependsOn) != 1 || spec.DependsOn[0] != "db" {
+		t.Errorf("DependsOn = %v, want legacy DependsOn decoded", spec.DependsOn)
+	}
+	if spec.Ports["8080"] != "80" || len(spec.Env) != 1 || spec.Env[0] != "A=1" ||
+		len(spec.Volumes) != 1 || spec.Labels["team"] != "core" {
+		t.Errorf("single-word legacy keys lost: %+v", spec)
+	}
+	if spec.HealthCheck == nil {
+		t.Fatal("HealthCheck = nil, want legacy HealthCheck decoded")
+	}
+	if spec.HealthCheck.Type != "http" || spec.HealthCheck.Path != "/health" ||
+		spec.HealthCheck.Port != 8080 || spec.HealthCheck.Retries != 4 {
+		t.Errorf("HealthCheck = %+v, want legacy values", *spec.HealthCheck)
+	}
+	if spec.HealthCheck.StartPeriod != 45*time.Second {
+		t.Errorf("StartPeriod = %s, want legacy StartPeriod decoded", spec.HealthCheck.StartPeriod)
+	}
+	if spec.Resources == nil {
+		t.Fatal("Resources = nil, want legacy Resources decoded")
+	}
+	if spec.Resources.CPULimit != 1e9 || spec.Resources.MemoryLimit != 512<<20 ||
+		spec.Resources.CPUReserve != 5e8 || spec.Resources.MemoryReserve != 256<<20 {
+		t.Errorf("Resources = %+v, want legacy CPULimit/MemoryLimit/CPUReserve/MemoryReserve", *spec.Resources)
+	}
+}
+
+// TestServiceSpecJSONPrefersCurrentShape: when both shapes appear, the
+// snake_case keys win so a transition-period client is never downgraded.
+func TestServiceSpecJSONPrefersCurrentShape(t *testing.T) {
+	payload := `{
+		"restart_policy": "always",
+		"RestartPolicy": "no",
+		"health_check": {"path": "/new"},
+		"HealthCheck": {"path": "/old"}
+	}`
+
+	var spec ServiceSpec
+	if err := json.Unmarshal([]byte(payload), &spec); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if spec.RestartPolicy != "always" {
+		t.Errorf("RestartPolicy = %q, want always (current shape wins)", spec.RestartPolicy)
+	}
+	if spec.HealthCheck == nil || spec.HealthCheck.Path != "/new" {
+		t.Errorf("HealthCheck = %+v, want path=/new (current shape wins)", spec.HealthCheck)
 	}
 }

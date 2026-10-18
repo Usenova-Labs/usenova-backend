@@ -20,7 +20,10 @@ func agentCmd() *cobra.Command {
 		Short: "Ping local agent API",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			cl := newClient()
+			cl, err := newClient()
+			if err != nil {
+				return err
+			}
 			lr, err := cl.ListServices(ctx)
 			if err != nil {
 				return err
@@ -88,7 +91,10 @@ func deployCmd() *cobra.Command {
 				spec["health_check"] = hc
 			}
 			ctx := context.Background()
-			cl := newClient()
+			cl, err := newClient()
+			if err != nil {
+				return err
+			}
 			res, err := cl.Deploy(ctx, spec)
 			if err != nil {
 				return reconcileDeploy(ctx, cl, name, err)
@@ -143,7 +149,10 @@ func statusCmd() *cobra.Command {
 		Short: "List services or get one service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			cl := newClient()
+			cl, err := newClient()
+			if err != nil {
+				return err
+			}
 			if len(args) == 0 {
 				lr, err := cl.ListServices(ctx)
 				if err != nil {
@@ -204,7 +213,10 @@ func stopCmd() *cobra.Command {
 				return fmt.Errorf("service name required")
 			}
 			ctx := context.Background()
-			cl := newClient()
+			cl, err := newClient()
+			if err != nil {
+				return err
+			}
 			if err := cl.Stop(ctx, args[0]); err != nil {
 				return err
 			}
@@ -227,7 +239,10 @@ func removeCmd() *cobra.Command {
 				return fmt.Errorf("service name required")
 			}
 			ctx := context.Background()
-			cl := newClient()
+			cl, err := newClient()
+			if err != nil {
+				return err
+			}
 			if err := cl.Remove(ctx, args[0]); err != nil {
 				return err
 			}

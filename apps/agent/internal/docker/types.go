@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/docker/go-connections/nat"
@@ -96,6 +97,96 @@ type ResourceLimits struct {
 	MemoryLimit   int64 `json:"memory_limit,omitempty"` // in bytes
 	CPUReserve    int64 `json:"cpu_reserve,omitempty"`
 	MemoryReserve int64 `json:"memory_reserve,omitempty"`
+}
+
+// UnmarshalJSON accepts both the current snake_case API keys and the legacy
+// Go field-name keys emitted before JSON tags were introduced, so older
+// clients do not silently lose fields during the API transition. encoding/json
+// matches untagged-style keys case-insensitively only when the folded names
+// are equal, so keys whose tags contain underscores (HealthCheck,
+// RestartPolicy, DependsOn) need an explicit fallback. The current shape wins
+// when both are present.
+func (s *ServiceSpec) UnmarshalJSON(data []byte) error {
+	type specTags ServiceSpec
+	var cur specTags
+	if err := json.Unmarshal(data, &cur); err != nil {
+		return err
+	}
+	var legacy struct {
+		HealthCheck   *HealthConfig
+		RestartPolicy string
+		DependsOn     []string
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	out := ServiceSpec(cur)
+	if out.HealthCheck == nil {
+		out.HealthCheck = legacy.HealthCheck
+	}
+	if out.RestartPolicy == "" {
+		out.RestartPolicy = legacy.RestartPolicy
+	}
+	if len(out.DependsOn) == 0 {
+		out.DependsOn = legacy.DependsOn
+	}
+	*s = out
+	return nil
+}
+
+// UnmarshalJSON accepts legacy "StartPeriod" alongside "start_period".
+func (h *HealthConfig) UnmarshalJSON(data []byte) error {
+	type cfgTags HealthConfig
+	var cur cfgTags
+	if err := json.Unmarshal(data, &cur); err != nil {
+		return err
+	}
+	var legacy struct {
+		StartPeriod time.Duration
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	out := HealthConfig(cur)
+	if out.StartPeriod == 0 {
+		out.StartPeriod = legacy.StartPeriod
+	}
+	*h = out
+	return nil
+}
+
+// UnmarshalJSON accepts legacy "CPULimit"/"MemoryLimit"/"CPUReserve"/
+// "MemoryReserve" alongside their snake_case forms.
+func (r *ResourceLimits) UnmarshalJSON(data []byte) error {
+	type limTags ResourceLimits
+	var cur limTags
+	if err := json.Unmarshal(data, &cur); err != nil {
+		return err
+	}
+	var legacy struct {
+		CPULimit      int64
+		MemoryLimit   int64
+		CPUReserve    int64
+		MemoryReserve int64
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	out := ResourceLimits(cur)
+	if out.CPULimit == 0 {
+		out.CPULimit = legacy.CPULimit
+	}
+	if out.MemoryLimit == 0 {
+		out.MemoryLimit = legacy.MemoryLimit
+	}
+	if out.CPUReserve == 0 {
+		out.CPUReserve = legacy.CPUReserve
+	}
+	if out.MemoryReserve == 0 {
+		out.MemoryReserve = legacy.MemoryReserve
+	}
+	*r = out
+	return nil
 }
 
 // LogOptions holds options for fetching logs

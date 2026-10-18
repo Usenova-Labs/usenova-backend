@@ -4,9 +4,59 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+func mustNew(t *testing.T, baseURL, token string, timeout time.Duration) *Client {
+	t.Helper()
+	cl, err := New(baseURL, token, timeout)
+	if err != nil {
+		t.Fatalf("New(%q, token=%q): %v", baseURL, token, err)
+	}
+	return cl
+}
+
+// TestNewRejectsCleartextTokenToNonLoopback enforces CWE-319: a bearer token
+// must never be sent over plaintext HTTP to a non-loopback host.
+func TestNewRejectsCleartextTokenToNonLoopback(t *testing.T) {
+	rejected := []struct {
+		baseURL string
+		token   string
+	}{
+		{"http://192.168.1.10:9090", "secret"},
+		{"http://example.com", "secret"},
+		{"http://[fd00::1]:9090", "secret"},
+		{"http://agent.internal.", "secret"},
+	}
+	for _, tc := range rejected {
+		if _, err := New(tc.baseURL, tc.token, time.Second); err == nil {
+			t.Errorf("New(%q, token) = nil error, want plaintext/remote rejection", tc.baseURL)
+		} else if !strings.Contains(err.Error(), "plaintext") {
+			t.Errorf("New(%q, token) error = %v, want plaintext transport message", tc.baseURL, err)
+		}
+	}
+
+	allowed := []struct {
+		baseURL string
+		token   string
+	}{
+		{"http://127.0.0.1:9090", "secret"},
+		{"http://127.0.0.1", "secret"},
+		{"http://localhost:9090", "secret"},
+		{"http://LOCALHOST:9090", "secret"},
+		{"http://[::1]:9090", "secret"},
+		{"https://example.com", "secret"},
+		{"http://192.168.1.10:9090", ""}, // no token: nothing to expose
+		{"", "secret"},                   // empty URL defaults to loopback
+	}
+	for _, tc := range allowed {
+		if _, err := New(tc.baseURL, tc.token, time.Second); err != nil {
+			t.Errorf("New(%q, token=%q) = %v, want nil", tc.baseURL, tc.token, err)
+		}
+	}
+}
 
 func TestValidateServiceName(t *testing.T) {
 	valid := []string{
@@ -57,7 +107,7 @@ func TestServiceURLNames(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cl := New(srv.URL, "", time.Second)
+	cl := mustNew(t, srv.URL, "", time.Second)
 	ctx := context.Background()
 
 	if _, err := cl.GetService(ctx, "foo?old"); err != nil {
@@ -106,7 +156,7 @@ func TestIsTimeout(t *testing.T) {
 		srv.Close()
 	}()
 
-	cl := New(srv.URL, "", 50*time.Millisecond)
+	cl := mustNew(t, srv.URL, "", 50*time.Millisecond)
 	if _, err := cl.ListServices(context.Background()); err == nil {
 		t.Fatal("ListServices: expected timeout error")
 	} else if !IsTimeout(err) {
@@ -119,7 +169,7 @@ func TestIsTimeout(t *testing.T) {
 	}))
 	defer fast.Close()
 
-	cl = New(fast.URL, "", time.Second)
+	cl = mustNew(t, fast.URL, "", time.Second)
 	_, err := cl.GetService(context.Background(), "missing")
 	if err == nil {
 		t.Fatal("GetService: expected error")
