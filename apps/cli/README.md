@@ -6,6 +6,7 @@ stop services running on infrastructure you control.
 ## Build
 
 ```bash
+mkdir -p bin   # gitignored; not present on a clean checkout
 (cd apps/cli && go build -o ../../bin/nova)
 ```
 

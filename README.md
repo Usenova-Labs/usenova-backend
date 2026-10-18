@@ -66,7 +66,8 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 > **Note**: The platform is in early MVP stage. Installation and usage instructions will be added as components stabilize.
 
 ```bash
-# Build the CLI from source (subshell keeps you at the repository root)
+# Build the CLI from source (bin/ is gitignored; subshell keeps you at the repo root)
+mkdir -p bin
 (cd apps/cli && go build -o ../../bin/nova)
 
 # Point it at a local agent and deploy
