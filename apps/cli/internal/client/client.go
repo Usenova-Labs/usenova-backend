@@ -4,12 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
+
+// DefaultTimeout bounds a single API request. Deployments may outlive it; the
+// CLI reconciles by querying service state after a timeout.
+const DefaultTimeout = 120 * time.Second
 
 type Client struct {
 	baseURL string
@@ -17,17 +23,59 @@ type Client struct {
 	http    *http.Client
 }
 
-func New(baseURL, token string) *Client {
+func New(baseURL, token string, timeout time.Duration) *Client {
 	if baseURL == "" {
 		baseURL = "http://127.0.0.1:9090"
+	}
+	if timeout <= 0 {
+		timeout = DefaultTimeout
 	}
 	return &Client{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		token:   token,
 		http: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: timeout,
 		},
 	}
+}
+
+// ValidateServiceName rejects names that cannot round-trip as a single path
+// segment on the agent API. The agent derives the name from the decoded
+// r.URL.Path and splits on "/", so an embedded "/" cannot be preserved by
+// escaping alone and must be rejected outright.
+func ValidateServiceName(name string) error {
+	if name == "" {
+		return errors.New("service name is required")
+	}
+	if name == "." || name == ".." || strings.ContainsRune(name, '/') {
+		return fmt.Errorf("invalid service name %q: must be a single path segment (no %q)", name, "/")
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("invalid service name %q: control characters are not allowed", name)
+		}
+	}
+	return nil
+}
+
+// servicePath builds "/services/{escapedName}" so reserved characters such as
+// "?", "#" and spaces survive as part of the segment instead of being parsed
+// as query/fragment delimiters.
+func servicePath(name string) string {
+	return "/services/" + url.PathEscape(name)
+}
+
+// IsTimeout reports whether err was caused by the configured request deadline
+// (HTTP client timeout or context deadline), as opposed to a server error.
+func IsTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Timeout()
+	}
+	return errors.Is(err, context.DeadlineExceeded)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
@@ -70,7 +118,10 @@ func (c *Client) ListServices(ctx context.Context) (*ListResponse, error) {
 }
 
 func (c *Client) GetService(ctx context.Context, name string) (any, error) {
-	resp, err := c.do(ctx, http.MethodGet, "/services/"+name, nil)
+	if err := ValidateServiceName(name); err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, http.MethodGet, servicePath(name), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +155,10 @@ func (c *Client) Deploy(ctx context.Context, spec map[string]any) (any, error) {
 }
 
 func (c *Client) Stop(ctx context.Context, name string) error {
-	resp, err := c.do(ctx, http.MethodPost, "/services/"+name+"/stop", nil)
+	if err := ValidateServiceName(name); err != nil {
+		return err
+	}
+	resp, err := c.do(ctx, http.MethodPost, servicePath(name)+"/stop", nil)
 	if err != nil {
 		return err
 	}
@@ -117,7 +171,10 @@ func (c *Client) Stop(ctx context.Context, name string) error {
 }
 
 func (c *Client) Remove(ctx context.Context, name string) error {
-	resp, err := c.do(ctx, http.MethodDelete, "/services/"+name, nil)
+	if err := ValidateServiceName(name); err != nil {
+		return err
+	}
+	resp, err := c.do(ctx, http.MethodDelete, servicePath(name), nil)
 	if err != nil {
 		return err
 	}

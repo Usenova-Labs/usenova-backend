@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/byoi-platform/cli/internal/client"
 	"github.com/spf13/cobra"
@@ -14,6 +15,7 @@ var (
 	agentURL string
 	apiToken string
 	output   string
+	timeout  time.Duration
 )
 
 func rootCmd() *cobra.Command {
@@ -25,6 +27,7 @@ func rootCmd() *cobra.Command {
 	c.PersistentFlags().StringVar(&agentURL, "agent-url", getEnv("USENOVA_AGENT_URL", "http://127.0.0.1:9090"), "Agent local API URL")
 	c.PersistentFlags().StringVar(&apiToken, "token", getEnv("USENOVA_API_TOKEN", ""), "Agent API token (Bearer)")
 	c.PersistentFlags().StringVarP(&output, "output", "o", "text", "Output format (text|json)")
+	c.PersistentFlags().DurationVar(&timeout, "timeout", client.DefaultTimeout, "HTTP request timeout (a deploy that exceeds it is reconciled via service status)")
 	c.AddCommand(agentCmd(), deployCmd(), statusCmd(), logsCmd(), stopCmd(), removeCmd())
 	return c
 }
@@ -32,7 +35,6 @@ func rootCmd() *cobra.Command {
 func Root() *cobra.Command {
 	return rootCmd()
 }
-
 
 func getEnv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
@@ -42,7 +44,7 @@ func getEnv(k, def string) string {
 }
 
 func newClient() *client.Client {
-	return client.New(agentURL, apiToken)
+	return client.New(agentURL, apiToken, timeout)
 }
 
 func printJSON(v any) error {

@@ -62,38 +62,40 @@ type NetworkSettings struct {
 // Type/Path/Port describe agent-side probes (http|tcp). Test is reserved for
 // docker-native HEALTHCHECK CMD forms (TODO: wire into container.Config.Healthcheck).
 type HealthConfig struct {
-	Type        string // "http" or "tcp" (agent-side probe); empty = infer from ports
-	Path        string // HTTP path, e.g. "/health" (used when Type == "http")
-	Port        int    // TCP port (used when Type == "tcp")
-	Test        []string
-	Interval    time.Duration
-	Timeout     time.Duration
-	Retries     int
-	StartPeriod time.Duration
+	Type        string        `json:"type,omitempty"` // "http" or "tcp" (agent-side probe); empty = infer from ports
+	Path        string        `json:"path,omitempty"` // HTTP path, e.g. "/health" (used when Type == "http")
+	Port        int           `json:"port,omitempty"` // TCP port (used when Type == "tcp")
+	Test        []string      `json:"test,omitempty"`
+	Interval    time.Duration `json:"interval,omitempty"`
+	Timeout     time.Duration `json:"timeout,omitempty"`
+	Retries     int           `json:"retries,omitempty"`
+	StartPeriod time.Duration `json:"start_period,omitempty"`
 }
 
-// ServiceSpec defines a service to be deployed
+// ServiceSpec defines a service to be deployed.
+// JSON tags are part of the agent API contract: clients (CLI, control plane)
+// send snake_case keys such as restart_policy and health_check.
 type ServiceSpec struct {
-	Name          string
-	Image         string
-	Version       string
-	Replicas      int
-	Ports         map[string]string
-	Env           []string
-	Volumes       []string
-	HealthCheck   *HealthConfig
-	RestartPolicy string
-	Resources     *ResourceLimits
-	Labels        map[string]string
-	DependsOn     []string
+	Name          string            `json:"name"`
+	Image         string            `json:"image"`
+	Version       string            `json:"version,omitempty"`
+	Replicas      int               `json:"replicas,omitempty"`
+	Ports         map[string]string `json:"ports,omitempty"`
+	Env           []string          `json:"env,omitempty"`
+	Volumes       []string          `json:"volumes,omitempty"`
+	HealthCheck   *HealthConfig     `json:"health_check,omitempty"`
+	RestartPolicy string            `json:"restart_policy,omitempty"`
+	Resources     *ResourceLimits   `json:"resources,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	DependsOn     []string          `json:"depends_on,omitempty"`
 }
 
 // ResourceLimits defines resource constraints
 type ResourceLimits struct {
-	CPULimit      int64 // in CPU shares
-	MemoryLimit   int64 // in bytes
-	CPUReserve    int64
-	MemoryReserve int64
+	CPULimit      int64 `json:"cpu_limit,omitempty"`    // in CPU shares
+	MemoryLimit   int64 `json:"memory_limit,omitempty"` // in bytes
+	CPUReserve    int64 `json:"cpu_reserve,omitempty"`
+	MemoryReserve int64 `json:"memory_reserve,omitempty"`
 }
 
 // LogOptions holds options for fetching logs

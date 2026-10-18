@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/byoi-platform/cli/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -48,6 +49,9 @@ func deployCmd() *cobra.Command {
 			if name == "" || image == "" {
 				return fmt.Errorf("--name and --image required")
 			}
+			if err := client.ValidateServiceName(name); err != nil {
+				return err
+			}
 			spec := map[string]any{
 				"name":  name,
 				"image": image,
@@ -87,7 +91,7 @@ func deployCmd() *cobra.Command {
 			cl := newClient()
 			res, err := cl.Deploy(ctx, spec)
 			if err != nil {
-				return err
+				return reconcileDeploy(ctx, cl, name, err)
 			}
 			if output == "json" {
 				return printJSON(res)
@@ -100,12 +104,37 @@ func deployCmd() *cobra.Command {
 	c.Flags().StringVar(&image, "image", "", "docker image")
 	c.Flags().StringVar(&restart, "restart", "", "restart policy (no|always|on-failure|unless-stopped)")
 	c.Flags().StringSliceVar(&ports, "port", nil, "port mapping host:container (repeatable)")
-	c.Flags().StringSliceVar(&envs, "env", nil, "env KEY=VALUE (repeatable)")
+	c.Flags().StringArrayVar(&envs, "env", nil, "env KEY=VALUE (repeatable)")
 	c.Flags().StringVar(&healthPath, "health-path", "", "health check HTTP path")
 	c.Flags().IntVar(&healthPort, "health-port", 0, "health check port (container or host mapping target)")
 	c.MarkFlagRequired("name")
 	c.MarkFlagRequired("image")
 	return c
+}
+
+// reconcileDeploy handles a deploy call that failed on the client timeout.
+// The agent runs the deployment on its own context, so it may still be in
+// flight; query the service state instead of reporting a bare timeout.
+func reconcileDeploy(ctx context.Context, cl *client.Client, name string, err error) error {
+	if !client.IsTimeout(err) {
+		return err
+	}
+	svc, gerr := cl.GetService(ctx, name)
+	if gerr != nil {
+		return err
+	}
+	if output == "json" {
+		if jerr := printJSON(map[string]any{
+			"warning": fmt.Sprintf("deploy request timed out after %s; service state follows", timeout),
+			"service": svc,
+		}); jerr != nil {
+			return jerr
+		}
+	} else {
+		b, _ := json.Marshal(svc)
+		fmt.Printf("Deploy request timed out after %s; service %q is still managed:\n%s\n", timeout, name, b)
+	}
+	return fmt.Errorf("deploy not confirmed within %s; check status with: status %s", timeout, name)
 }
 
 func statusCmd() *cobra.Command {
