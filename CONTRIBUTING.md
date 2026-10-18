@@ -50,13 +50,13 @@ Be respectful, inclusive, and constructive in all interactions. We're building t
 5. **Build binaries**
    ```bash
    # CLI
-   cd apps/cli && go build -o ../../bin/byoi-cli
+   cd apps/cli && go build -o ../../bin/nova
    
    # Agent
-   cd apps/agent && go build -o ../../bin/byoi-agent
+   cd apps/agent && go build -o ../../bin/usenova-agent
    
    # Control Plane
-   cd apps/control-plane && go build -o ../../bin/byoi-control
+   cd apps/control-plane && go build -o ../../bin/nova-control
    ```
 
 ## Development Workflow

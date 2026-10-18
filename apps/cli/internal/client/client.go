@@ -158,7 +158,7 @@ func (c *Client) ListServices(ctx context.Context) (*ListResponse, error) {
 	return &lr, nil
 }
 
-func (c *Client) GetService(ctx context.Context, name string) (any, error) {
+func (c *Client) GetService(ctx context.Context, name string) (*Service, error) {
 	if err := ValidateServiceName(name); err != nil {
 		return nil, err
 	}
@@ -171,11 +171,11 @@ func (c *Client) GetService(ctx context.Context, name string) (any, error) {
 		b, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("get service failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
-	var out any
+	var out Service
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return &out, nil
 }
 
 func (c *Client) Deploy(ctx context.Context, spec map[string]any) (any, error) {

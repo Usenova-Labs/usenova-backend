@@ -20,14 +20,23 @@ var (
 
 func rootCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:     "usenova",
-		Short:   "Usenova/BYOI CLI",
+		Use:     "nova",
+		Short:   "Nova CLI",
 		Version: "dev",
 	}
 	c.PersistentFlags().StringVar(&agentURL, "agent-url", getEnv("USENOVA_AGENT_URL", "http://127.0.0.1:9090"), "Agent local API URL")
 	c.PersistentFlags().StringVar(&apiToken, "token", getEnv("USENOVA_API_TOKEN", ""), "Agent API token (Bearer)")
 	c.PersistentFlags().StringVarP(&output, "output", "o", "text", "Output format (text|json)")
 	c.PersistentFlags().DurationVar(&timeout, "timeout", client.DefaultTimeout, "HTTP request timeout (a deploy that exceeds it is reconciled via service status)")
+	// Fail-soft early: an empty token only surfaces as a 401 from the agent
+	// today. Warn at parse time so users see the misconfiguration before any
+	// request is attempted.
+	c.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if apiToken == "" {
+			fmt.Fprintln(os.Stderr, "warning: no API token configured (--token or USENOVA_API_TOKEN); the agent requires a bearer token and will reject requests")
+		}
+		return nil
+	}
 	c.AddCommand(agentCmd(), deployCmd(), statusCmd(), logsCmd(), stopCmd(), removeCmd())
 	return c
 }

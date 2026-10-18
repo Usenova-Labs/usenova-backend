@@ -77,7 +77,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        app: [cli, agent, control-plane]
+        include:
+          - app: cli
+            binary: nova
+          - app: agent
+            binary: usenova-agent
+          - app: control-plane
+            binary: nova-control
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -91,13 +97,13 @@ jobs:
       - name: Build ${{ matrix.app }}
         run: |
           cd apps/${{ matrix.app }}
-          go build -v -o ../../bin/byoi-${{ matrix.app }}
+          go build -v -o ../../bin/${{ matrix.binary }}
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: byoi-${{ matrix.app }}
-          path: bin/byoi-${{ matrix.app }}
+          name: ${{ matrix.binary }}
+          path: bin/${{ matrix.binary }}
           retention-days: 7
 
   rust-lint:

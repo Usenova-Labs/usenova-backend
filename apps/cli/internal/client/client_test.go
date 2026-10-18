@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -179,5 +180,31 @@ func TestIsTimeout(t *testing.T) {
 	}
 	if IsTimeout(nil) {
 		t.Error("IsTimeout(nil) = true, want false")
+	}
+}
+
+// TestServiceRawPassthrough: Service decodes into typed fields for text
+// output while replaying the original agent payload for -o json, so fields
+// the CLI does not model (Health, LastError) are not lost.
+func TestServiceRawPassthrough(t *testing.T) {
+	payload := `{"Spec":{"name":"web","image":"nginx:alpine","ports":{"8080":"80"},"health_check":{"type":"http","path":"/health","port":8080}},"ContainerID":"abc123","State":"running","DesiredState":"running","Health":{"Type":"http"},"DeployedAt":"2026-10-18T12:00:00Z","RestartCount":2,"LastError":null}`
+
+	var s Service
+	if err := json.Unmarshal([]byte(payload), &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if s.Spec.Name != "web" || s.Spec.Image != "nginx:alpine" || s.State != "running" || s.RestartCount != 2 {
+		t.Errorf("typed fields lost: %+v", s)
+	}
+	if hc := s.Spec.HealthCheck; hc == nil || hc.Type != "http" || hc.Path != "/health" || hc.Port != 8080 {
+		t.Errorf("HealthCheck = %+v, want http /health :8080", hc)
+	}
+
+	out, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(out) != payload {
+		t.Errorf("JSON replay = %s\nwant original payload %s", out, payload)
 	}
 }

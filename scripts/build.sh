@@ -18,9 +18,9 @@ mkdir -p "$BUILD_DIR"
 # Build CLI
 echo "Building CLI..."
 cd apps/cli
-go build -ldflags="-X main.version=$VERSION -X main.commit=$COMMIT" -o "../../$BUILD_DIR/byoi-cli"
+go build -ldflags="-X main.version=$VERSION -X main.commit=$COMMIT" -o "../../$BUILD_DIR/nova"
 cd ../..
-echo "✓ CLI built: $BUILD_DIR/byoi-cli"
+echo "✓ CLI built: $BUILD_DIR/nova"
 
 # Build Agent
 echo "Building Agent..."
@@ -32,9 +32,9 @@ echo "✓ Agent built: $BUILD_DIR/usenova-agent"
 # Build Control Plane
 echo "Building Control Plane..."
 cd apps/control-plane
-go build -ldflags="-X main.version=$VERSION -X main.commit=$COMMIT" -o "../../$BUILD_DIR/byoi-control"
+go build -ldflags="-X main.version=$VERSION -X main.commit=$COMMIT" -o "../../$BUILD_DIR/nova-control"
 cd ../..
-echo "✓ Control Plane built: $BUILD_DIR/byoi-control"
+echo "✓ Control Plane built: $BUILD_DIR/nova-control"
 
 # Build Smart Contracts
 echo "Building Smart Contracts..."
