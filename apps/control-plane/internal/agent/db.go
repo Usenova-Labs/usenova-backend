@@ -24,6 +24,13 @@ const sqliteDriver = "sqlite"
 // SQLite database used to persist the agent registry, applies the bootstrap
 // schema and returns a ready-to-use handle.
 func OpenSQLite(path string) (*sql.DB, error) {
+	// Disk-backed "file:" URIs would bypass the owner-only file permissions
+	// applied below, so reject them outright rather than silently weakening
+	// security. Only plain paths and ":memory:" are supported.
+	if strings.HasPrefix(path, "file:") {
+		return nil, fmt.Errorf("unsupported database path %q: file: URIs are not supported", path)
+	}
+
 	// Owner-only directory: the database stores plaintext session tokens and
 	// must not be readable by other local users. Create it if needed, then
 	// tighten permissions so a pre-existing directory with looser mode is also
@@ -67,10 +74,10 @@ func OpenSQLite(path string) (*sql.DB, error) {
 // owner-only permissions on it. SQLite creates new files with 0666 & ~umask
 // (commonly 0644), which would expose the stored session tokens to any local
 // user, so the file is pre-created with 0600 and re-tightened on every start
-// to also cover files created earlier with looser permissions. In-memory
-// databases are skipped.
+// to also cover files created earlier with looser permissions. The in-memory
+// ":memory:" database is skipped as it has no on-disk file.
 func ensurePrivateFile(path string) error {
-	if path == ":memory:" || strings.HasPrefix(path, "file:") {
+	if path == ":memory:" {
 		return nil
 	}
 

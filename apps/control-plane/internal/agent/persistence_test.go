@@ -178,6 +178,17 @@ func TestOpenSQLite_CreatesParentDirectory(t *testing.T) {
 	}
 }
 
+func TestOpenSQLite_RejectsFileURIs(t *testing.T) {
+	for _, path := range []string{
+		"file:data/control-plane.db",
+		"file:data/control-plane.db?mode=rwc",
+	} {
+		if _, err := OpenSQLite(path); err == nil {
+			t.Errorf("expected OpenSQLite(%q) to reject file: URIs", path)
+		}
+	}
+}
+
 func TestOpenSQLite_RestrictsDatabaseFilePermissions(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
 	path := filepath.Join(dir, "registry.db")
@@ -231,8 +242,13 @@ func TestOpenSQLite_TightensExistingFilePermissions(t *testing.T) {
 func TestOpenSQLite_TightensExistingDirectoryPermissions(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
 	// Simulate a database directory created earlier with permissive mode.
+	// Mkdir's mode is filtered by the process umask, so chmod explicitly to
+	// guarantee the directory starts out world-accessible.
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("Chmod: %v", err)
 	}
 
 	db, err := OpenSQLite(filepath.Join(dir, "registry.db"))
