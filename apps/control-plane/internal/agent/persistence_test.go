@@ -227,3 +227,25 @@ func TestOpenSQLite_TightensExistingFilePermissions(t *testing.T) {
 		t.Errorf("expected permissions to be tightened, got mode %#o", perms)
 	}
 }
+
+func TestOpenSQLite_TightensExistingDirectoryPermissions(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	// Simulate a database directory created earlier with permissive mode.
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	db, err := OpenSQLite(filepath.Join(dir, "registry.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	db.Close()
+
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat database directory: %v", err)
+	}
+	if perms := dirInfo.Mode().Perm(); perms&0o077 != 0 {
+		t.Errorf("expected directory permissions to be tightened, got mode %#o", perms)
+	}
+}

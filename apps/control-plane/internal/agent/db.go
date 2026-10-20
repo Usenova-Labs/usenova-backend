@@ -25,10 +25,15 @@ const sqliteDriver = "sqlite"
 // schema and returns a ready-to-use handle.
 func OpenSQLite(path string) (*sql.DB, error) {
 	// Owner-only directory: the database stores plaintext session tokens and
-	// must not be readable by other local users.
+	// must not be readable by other local users. Create it if needed, then
+	// tighten permissions so a pre-existing directory with looser mode is also
+	// covered.
 	if dir := filepath.Dir(path); dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create database directory: %w", err)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("restrict database directory permissions: %w", err)
 		}
 	}
 
