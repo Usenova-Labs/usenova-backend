@@ -60,7 +60,6 @@ nova deploy
 ### 4. Monitor
 
 ```bash
-# Coming soon
 nova status
 nova logs my-service
 ```

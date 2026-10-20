@@ -2,6 +2,9 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +34,10 @@ type fakeRuntime struct {
 
 	inspect map[string]types.ContainerJSON
 	nextID  int
+
+	logCalls []logCall
+	logsBody string
+	logsErr  error
 }
 
 func newFakeRuntime() *fakeRuntime {
@@ -85,6 +92,25 @@ func (f *fakeRuntime) InspectContainer(ctx context.Context, containerID string) 
 
 func (f *fakeRuntime) ListContainers(ctx context.Context, all bool, filter filters.Args) ([]types.Container, error) {
 	return nil, nil
+}
+
+// logOpts records the options passed to GetContainerLogs, and logsErr/logsBody
+// let tests simulate daemon errors and canned output.
+type logCall struct {
+	containerID string
+	opts        docker.LogOptions
+}
+
+func (f *fakeRuntime) GetContainerLogs(ctx context.Context, containerID string, opts docker.LogOptions) (io.ReadCloser, error) {
+	f.logCalls = append(f.logCalls, logCall{containerID: containerID, opts: opts})
+	if f.logsErr != nil {
+		return nil, f.logsErr
+	}
+	body := f.logsBody
+	if body == "" {
+		body = "line one\nline two\n"
+	}
+	return io.NopCloser(strings.NewReader(body)), nil
 }
 
 var errNotFound = &notFoundError{}
@@ -206,6 +232,71 @@ func TestManager_StopAndRemoveService(t *testing.T) {
 	if _, ok := m.GetService("app"); ok {
 		t.Error("expected service to be gone after remove")
 	}
+}
+
+func TestManager_ServiceLogs(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("streams logs for a deployed service", func(t *testing.T) {
+		fake := newFakeRuntime()
+		fake.logsBody = "hello\nworld\n"
+		m := NewManager(fake, testLogger())
+		svc, err := m.DeployService(ctx, docker.ServiceSpec{Name: "web", Image: "nginx:1"})
+		if err != nil {
+			t.Fatalf("deploy failed: %v", err)
+		}
+
+		rc, err := m.ServiceLogs(ctx, "web", docker.LogOptions{Tail: "50", Follow: true})
+		if err != nil {
+			t.Fatalf("ServiceLogs failed: %v", err)
+		}
+		defer rc.Close()
+		b, _ := io.ReadAll(rc)
+		if string(b) != "hello\nworld\n" {
+			t.Errorf("unexpected logs %q", b)
+		}
+		if len(fake.logCalls) != 1 || fake.logCalls[0].containerID != svc.ContainerID {
+			t.Fatalf("unexpected log call: %+v", fake.logCalls)
+		}
+		if fake.logCalls[0].opts.Tail != "50" || !fake.logCalls[0].opts.Follow {
+			t.Errorf("options not forwarded: %+v", fake.logCalls[0].opts)
+		}
+	})
+
+	t.Run("unknown service returns ErrServiceNotFound", func(t *testing.T) {
+		m := NewManager(newFakeRuntime(), testLogger())
+		_, err := m.ServiceLogs(ctx, "ghost", docker.LogOptions{})
+		if !errors.Is(err, ErrServiceNotFound) {
+			t.Fatalf("expected ErrServiceNotFound, got %v", err)
+		}
+	})
+
+	t.Run("docker unavailable returns ErrRuntimeUnavailable", func(t *testing.T) {
+		fake := newFakeRuntime()
+		m := NewManager(fake, testLogger())
+		if _, err := m.DeployService(ctx, docker.ServiceSpec{Name: "web", Image: "nginx:1"}); err != nil {
+			t.Fatalf("deploy failed: %v", err)
+		}
+		fake.available = false
+		_, err := m.ServiceLogs(ctx, "web", docker.LogOptions{})
+		if !errors.Is(err, ErrRuntimeUnavailable) {
+			t.Fatalf("expected ErrRuntimeUnavailable, got %v", err)
+		}
+	})
+
+	t.Run("service without container returns ErrServiceNotFound", func(t *testing.T) {
+		fake := newFakeRuntime()
+		m := NewManager(fake, testLogger())
+		// Register a service with no ContainerID directly (as adoption might).
+		m.mu.Lock()
+		m.services["web"] = &Service{Spec: docker.ServiceSpec{Name: "web"}}
+		m.mu.Unlock()
+
+		_, err := m.ServiceLogs(ctx, "web", docker.LogOptions{})
+		if !errors.Is(err, ErrServiceNotFound) {
+			t.Fatalf("expected ErrServiceNotFound, got %v", err)
+		}
+	})
 }
 
 func TestBuildHealthCheck(t *testing.T) {

@@ -3,8 +3,10 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +143,74 @@ func TestServiceURLNames(t *testing.T) {
 	if err := cl.Stop(ctx, ""); err == nil {
 		t.Error("Stop(\"\") = nil, want validation error")
 	}
+}
+
+// TestLogs builds the request path/query correctly and surfaces agent errors.
+func TestLogs(t *testing.T) {
+	var method, path, rawQuery, auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		path = r.URL.Path
+		rawQuery = r.URL.RawQuery
+		auth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("log line\n"))
+	}))
+	defer srv.Close()
+
+	cl := mustNew(t, srv.URL, "tok", time.Second)
+	ctx := context.Background()
+
+	rc, err := cl.Logs(ctx, "web", LogsOptions{Tail: "25", Follow: true, Timestamps: true})
+	if err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+	defer rc.Close()
+	b, _ := io.ReadAll(rc)
+	if string(b) != "log line\n" {
+		t.Errorf("body = %q", b)
+	}
+	if method != http.MethodGet || path != "/services/web/logs" {
+		t.Errorf("request = %s %s, want GET /services/web/logs", method, path)
+	}
+	q := parseQuery(t, rawQuery)
+	if q.Get("tail") != "25" || q.Get("follow") != "true" || q.Get("timestamps") != "true" {
+		t.Errorf("query = %q", rawQuery)
+	}
+	if auth != "Bearer tok" {
+		t.Errorf("Authorization = %q, want Bearer tok", auth)
+	}
+
+	if _, err := cl.Logs(ctx, "foo/bar", LogsOptions{}); err == nil {
+		t.Error("Logs(foo/bar) = nil, want validation error")
+	}
+}
+
+// TestLogsError surfaces the agent's status and message.
+func TestLogsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":404,"message":"service not found"}`))
+	}))
+	defer srv.Close()
+
+	cl := mustNew(t, srv.URL, "", time.Second)
+	_, err := cl.Logs(context.Background(), "ghost", LogsOptions{})
+	if err == nil {
+		t.Fatal("Logs: expected error")
+	}
+	if !strings.Contains(err.Error(), "404") || !strings.Contains(err.Error(), "service not found") {
+		t.Errorf("error = %v, want 404 + service not found", err)
+	}
+}
+
+func parseQuery(t *testing.T, raw string) url.Values {
+	t.Helper()
+	v, err := url.ParseQuery(raw)
+	if err != nil {
+		t.Fatalf("ParseQuery(%q): %v", raw, err)
+	}
+	return v
 }
 
 func TestIsTimeout(t *testing.T) {

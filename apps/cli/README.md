@@ -79,8 +79,16 @@ nova remove web
 ### Logs
 
 ```bash
-nova logs web               # stub: agent API has no logs endpoint yet
+nova logs web               # last 100 lines
+nova logs web --tail 500    # last 500 lines (--tail all for everything)
+nova logs web --follow      # stream new lines until Ctrl-C
+nova logs web --timestamps  # prefix each line with its timestamp
+nova logs web -o json       # {"service","count","lines"} document
 ```
+
+`-o json` reads the selected tail (it cannot be combined with `--follow`).
+Clear errors are reported when the service is unknown (404) or Docker is
+unavailable on the agent (503).
 
 ## Service names
 
@@ -89,6 +97,5 @@ Reserved characters such as `?` and `#` are accepted and escaped by the CLI.
 
 ## Follow-ups
 
-- [ ] `nova logs` needs a `GET /services/{name}/logs` endpoint on the agent.
 - [ ] Control plane commands (`nova agents list`, billing, …) are out of scope
   for this MVP.

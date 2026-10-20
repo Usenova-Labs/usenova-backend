@@ -14,6 +14,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/sirupsen/logrus"
 )
 
@@ -196,8 +197,18 @@ func (c *Client) InspectContainer(ctx context.Context, containerID string) (*typ
 	return &inspect, nil
 }
 
-// GetContainerLogs gets logs from a container
+// GetContainerLogs returns a stream of the container's stdout and stderr.
+//
+// The reader is already demultiplexed: Docker prefixes every frame with an
+// 8-byte header unless the container runs with a TTY, so raw passthrough would
+// leak those bytes (and interleave stdout/stderr incorrectly) to callers.
+// stdout and stderr are merged into a single plain-text stream.
 func (c *Client) GetContainerLogs(ctx context.Context, containerID string, opts LogOptions) (io.ReadCloser, error) {
+	info, err := c.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect container %s: %w", containerID, err)
+	}
+
 	logOptions := types.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -210,7 +221,32 @@ func (c *Client) GetContainerLogs(ctx context.Context, containerID string, opts 
 		logOptions.Since = opts.Since.Format(time.RFC3339)
 	}
 
-	return c.cli.ContainerLogs(ctx, containerID, logOptions)
+	stream, err := c.cli.ContainerLogs(ctx, containerID, logOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get logs for container %s: %w", containerID, err)
+	}
+
+	if info.Config != nil && info.Config.Tty {
+		// TTY containers emit an unframed byte stream; nothing to demultiplex.
+		return stream, nil
+	}
+	return demuxLogStream(stream), nil
+}
+
+// demuxLogStream adapts Docker's multiplexed log stream to a plain reader.
+// Both output streams are written to the same destination, so callers see one
+// ordered stream of text lines. The underlying stream is closed when
+// demultiplexing finishes, and a reader closed early aborts the pump.
+func demuxLogStream(src io.ReadCloser) io.ReadCloser {
+	pr, pw := io.Pipe()
+	go func() {
+		_, err := stdcopy.StdCopy(pw, pw, src)
+		_ = src.Close()
+		// CloseWithError(io.EOF) is indistinguishable from a clean Close for
+		// readers, so a nil error still ends the stream normally.
+		_ = pw.CloseWithError(err)
+	}()
+	return pr
 }
 
 // ListContainers lists containers with filters

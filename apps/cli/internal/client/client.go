@@ -22,6 +22,10 @@ type Client struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	// stream is a client without an overall timeout, used for log streaming
+	// where the connection may stay open indefinitely. Cancellation is driven
+	// by the request context (e.g. Ctrl-C) instead of a deadline.
+	stream *http.Client
 }
 
 // New builds a client for baseURL. It refuses a credentialed non-loopback
@@ -43,6 +47,7 @@ func New(baseURL, token string, timeout time.Duration) (*Client, error) {
 		http: &http.Client{
 			Timeout: timeout,
 		},
+		stream: &http.Client{},
 	}, nil
 }
 
@@ -120,6 +125,12 @@ func IsTimeout(err error) bool {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	return c.doWith(ctx, c.http, method, path, body)
+}
+
+// doWith issues a request using the given HTTP client. do uses the
+// timeout-bounded client; streaming callers use c.stream instead.
+func (c *Client) doWith(ctx context.Context, hc *http.Client, method, path string, body any) (*http.Response, error) {
 	var buf io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -138,7 +149,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-	return c.http.Do(req)
+	return hc.Do(req)
 }
 
 func (c *Client) ListServices(ctx context.Context) (*ListResponse, error) {
@@ -209,6 +220,51 @@ func (c *Client) Stop(ctx context.Context, name string) error {
 		return fmt.Errorf("stop failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return nil
+}
+
+// LogsOptions selects which logs to fetch from the agent.
+type LogsOptions struct {
+	// Tail is the number of lines from the end of the log, or "all". Empty
+	// lets the agent apply its default (100).
+	Tail string
+	// Follow streams new log lines until the context is canceled.
+	Follow bool
+	// Timestamps prefixes each line with its RFC3339Nano timestamp.
+	Timestamps bool
+}
+
+// Logs opens a log stream for a service. The caller must close the returned
+// reader. Agent errors (missing service, Docker unavailable) surface as an
+// error.
+func (c *Client) Logs(ctx context.Context, name string, opts LogsOptions) (io.ReadCloser, error) {
+	if err := ValidateServiceName(name); err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	if opts.Tail != "" {
+		q.Set("tail", opts.Tail)
+	}
+	if opts.Follow {
+		q.Set("follow", "true")
+	}
+	if opts.Timestamps {
+		q.Set("timestamps", "true")
+	}
+	path := servicePath(name) + "/logs"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+
+	resp, err := c.doWith(ctx, c.stream, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("logs failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return resp.Body, nil
 }
 
 func (c *Client) Remove(ctx context.Context, name string) error {

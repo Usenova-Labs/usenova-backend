@@ -3,10 +3,14 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -252,23 +256,93 @@ func statusCmd() *cobra.Command {
 }
 
 func logsCmd() *cobra.Command {
-	// TODO(agent API): implement once the agent exposes
-	// GET /services/{name}/logs (follow, tail, timestamps).
+	var tail string
+	var follow, timestamps bool
 	c := &cobra.Command{
 		Use:   "logs <name>",
-		Short: "Fetch logs for a service (stub if not exposed)",
+		Short: "Fetch (or follow) logs for a service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return fmt.Errorf("service name required")
 			}
-			if output == "json" {
-				return printJSON(map[string]string{"message": "logs endpoint not exposed by agent API yet"})
+			name := args[0]
+			ctx := context.Background()
+			if follow {
+				// --follow streams indefinitely; honor SIGINT by canceling
+				// instead of relying on --timeout, which would cut the stream
+				// mid-line.
+				var cancel context.CancelFunc
+				ctx, cancel = signalContext()
+				defer cancel()
+			} else {
+				// Non-follow requests are bounded by --timeout so a stalled
+				// agent cannot hang the command.
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, timeout)
+				defer cancel()
 			}
-			fmt.Println("logs endpoint not exposed by agent API yet")
-			return nil
+			cl, err := newClient()
+			if err != nil {
+				return err
+			}
+			rc, err := cl.Logs(ctx, name, client.LogsOptions{
+				Tail:       tail,
+				Follow:     follow,
+				Timestamps: timestamps,
+			})
+			if err != nil {
+				return err
+			}
+			defer rc.Close()
+
+			if output == "json" {
+				// JSON mode returns a structured document rather than a raw
+				// stream so consumers can parse it; it reads the whole tail and
+				// is incompatible with --follow.
+				if follow {
+					return fmt.Errorf("--output json cannot be combined with --follow")
+				}
+				b, err := io.ReadAll(rc)
+				if err != nil {
+					return err
+				}
+				lines := splitLines(string(b))
+				return printJSON(map[string]any{
+					"service": name,
+					"count":   len(lines),
+					"lines":   lines,
+				})
+			}
+
+			_, err = io.Copy(os.Stdout, rc)
+			// Ctrl-C is the documented way to stop --follow; report it as a
+			// clean exit rather than "context canceled" with a non-zero status.
+			if follow && errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
 		},
 	}
+	c.Flags().StringVar(&tail, "tail", "100", "number of lines from the end (or \"all\")")
+	c.Flags().BoolVarP(&follow, "follow", "f", false, "stream new log lines until interrupted")
+	c.Flags().BoolVar(&timestamps, "timestamps", false, "prefix each line with its timestamp")
 	return c
+}
+
+// signalContext returns a context canceled on SIGINT/SIGTERM, so --follow can
+// be stopped cleanly with Ctrl-C.
+func signalContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
+// splitLines splits a log blob into lines, dropping the trailing empty element
+// an ending newline would otherwise produce.
+func splitLines(s string) []string {
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
+		return []string{}
+	}
+	return strings.Split(s, "\n")
 }
 
 func stopCmd() *cobra.Command {

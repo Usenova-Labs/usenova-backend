@@ -1,6 +1,27 @@
 package cmd
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+func TestSplitLines(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"empty", "", []string{}},
+		{"trailing newline dropped", "a\nb\n", []string{"a", "b"}},
+		{"no trailing newline", "a\nb", []string{"a", "b"}},
+		{"blank lines preserved", "a\n\nb\n", []string{"a", "", "b"}},
+	}
+	for _, tc := range cases {
+		if got := splitLines(tc.in); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("splitLines(%s) = %#v, want %#v", tc.name, got, tc.want)
+		}
+	}
+}
 
 func TestFormatPorts(t *testing.T) {
 	cases := []struct {

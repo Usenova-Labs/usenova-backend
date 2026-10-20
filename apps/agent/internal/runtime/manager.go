@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/errdefs"
 	"github.com/sirupsen/logrus"
 
 	"github.com/byoi-platform/agent/internal/docker"
@@ -40,6 +42,15 @@ var reservedLabels = map[string]bool{
 // that a newer intent (stop/remove/redeploy) has replaced it.
 var errSuperseded = errors.New("operation superseded")
 
+// ErrServiceNotFound is returned when the named service is not managed by this
+// agent. Callers (the local API) map it to 404 instead of a generic failure.
+var ErrServiceNotFound = errors.New("service not found")
+
+// ErrRuntimeUnavailable is returned when the container runtime cannot serve a
+// request (no Docker client, or the daemon is unreachable). Callers map it to
+// 503 so operators see "Docker is down", not "the agent is broken".
+var ErrRuntimeUnavailable = errors.New("container runtime unavailable")
+
 // serviceMeta is the non-secret deployment metadata persisted as a container
 // label so a fresh manager can re-adopt containers after an agent restart.
 // Secrets (env values, registry credentials) are deliberately excluded.
@@ -59,6 +70,7 @@ type ContainerRuntime interface {
 	RemoveContainer(ctx context.Context, containerID string, force bool) error
 	InspectContainer(ctx context.Context, containerID string) (*types.ContainerJSON, error)
 	ListContainers(ctx context.Context, all bool, filters filters.Args) ([]types.Container, error)
+	GetContainerLogs(ctx context.Context, containerID string, opts docker.LogOptions) (io.ReadCloser, error)
 }
 
 // Manager tracks desired services and keeps their containers alive.
@@ -436,6 +448,71 @@ func (m *Manager) RunningCount() int {
 // GetService returns a snapshot of a managed service by name.
 func (m *Manager) GetService(name string) (*Service, bool) {
 	return m.snapshot(name)
+}
+
+// ServiceLogs returns a stream of a managed service's container logs. Like the
+// other mutating operations it resolves the container under the per-service
+// lock so a concurrent stop/redeploy cannot make it read a container that is
+// about to be replaced. The caller must close the returned reader.
+//
+// It distinguishes "no such service" (ErrServiceNotFound), "cannot serve logs
+// right now" (ErrRuntimeUnavailable) and "service has no container yet"
+// (ErrServiceNotFound) so the HTTP layer can map them to clear status codes.
+func (m *Manager) ServiceLogs(ctx context.Context, name string, opts docker.LogOptions) (io.ReadCloser, error) {
+	// Cheap existence check so an unknown service is rejected without taking
+	// the op lock. The container ID is re-read under the lock below, where a
+	// concurrent redeploy cannot leave us holding a stale one.
+	m.mu.RLock()
+	_, ok := m.services[name]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrServiceNotFound, name)
+	}
+
+	if m.docker == nil || !m.docker.IsAvailable(ctx) {
+		return nil, fmt.Errorf("%w: Docker daemon is not reachable", ErrRuntimeUnavailable)
+	}
+
+	lock := m.opLock(name)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Read the container ID under the op lock: a redeploy that held the lock
+	// before us has already published the new ContainerID, so we never read a
+	// container that is about to be replaced.
+	m.mu.RLock()
+	svc, still := m.services[name]
+	var id string
+	if still {
+		id = svc.ContainerID
+	}
+	m.mu.RUnlock()
+	if !still {
+		// The service was removed while we waited for the lock.
+		return nil, fmt.Errorf("%w: %s", ErrServiceNotFound, name)
+	}
+
+	if id == "" {
+		// The service may have been adopted or deployed since the snapshot;
+		// fall back to a label-scoped lookup before giving up.
+		found, err := m.findManagedContainer(ctx, name)
+		if err != nil {
+			return nil, fmt.Errorf("look up container for %s: %w", name, err)
+		}
+		if found == "" {
+			return nil, fmt.Errorf("%w: service %s has no container", ErrServiceNotFound, name)
+		}
+		id = found
+	}
+
+	rc, err := m.docker.GetContainerLogs(ctx, id, opts)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: container for service %s is gone", ErrServiceNotFound, name)
+		}
+		return nil, err
+	}
+	return rc, nil
 }
 
 // ListServices returns snapshots of all managed services.
