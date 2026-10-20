@@ -459,12 +459,11 @@ func (m *Manager) GetService(name string) (*Service, bool) {
 // right now" (ErrRuntimeUnavailable) and "service has no container yet"
 // (ErrServiceNotFound) so the HTTP layer can map them to clear status codes.
 func (m *Manager) ServiceLogs(ctx context.Context, name string, opts docker.LogOptions) (io.ReadCloser, error) {
+	// Cheap existence check so an unknown service is rejected without taking
+	// the op lock. The container ID is re-read under the lock below, where a
+	// concurrent redeploy cannot leave us holding a stale one.
 	m.mu.RLock()
-	svc, ok := m.services[name]
-	var id string
-	if ok {
-		id = svc.ContainerID
-	}
+	_, ok := m.services[name]
 	m.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrServiceNotFound, name)
@@ -477,6 +476,21 @@ func (m *Manager) ServiceLogs(ctx context.Context, name string, opts docker.LogO
 	lock := m.opLock(name)
 	lock.Lock()
 	defer lock.Unlock()
+
+	// Read the container ID under the op lock: a redeploy that held the lock
+	// before us has already published the new ContainerID, so we never read a
+	// container that is about to be replaced.
+	m.mu.RLock()
+	svc, still := m.services[name]
+	var id string
+	if still {
+		id = svc.ContainerID
+	}
+	m.mu.RUnlock()
+	if !still {
+		// The service was removed while we waited for the lock.
+		return nil, fmt.Errorf("%w: %s", ErrServiceNotFound, name)
+	}
 
 	if id == "" {
 		// The service may have been adopted or deployed since the snapshot;

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -266,11 +267,18 @@ func logsCmd() *cobra.Command {
 			}
 			name := args[0]
 			ctx := context.Background()
-			// --follow streams indefinitely; honor SIGINT by canceling instead
-			// of relying on --timeout, which would cut the stream mid-line.
 			if follow {
+				// --follow streams indefinitely; honor SIGINT by canceling
+				// instead of relying on --timeout, which would cut the stream
+				// mid-line.
 				var cancel context.CancelFunc
 				ctx, cancel = signalContext()
+				defer cancel()
+			} else {
+				// Non-follow requests are bounded by --timeout so a stalled
+				// agent cannot hang the command.
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, timeout)
 				defer cancel()
 			}
 			cl, err := newClient()
@@ -307,6 +315,11 @@ func logsCmd() *cobra.Command {
 			}
 
 			_, err = io.Copy(os.Stdout, rc)
+			// Ctrl-C is the documented way to stop --follow; report it as a
+			// clean exit rather than "context canceled" with a non-zero status.
+			if follow && errors.Is(err, context.Canceled) {
+				return nil
+			}
 			return err
 		},
 	}
