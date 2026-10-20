@@ -14,8 +14,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +35,7 @@ type ServiceManager interface {
 	RemoveService(ctx context.Context, name string) error
 	ListServices() []*runtime.Service
 	GetService(name string) (*runtime.Service, bool)
+	ServiceLogs(ctx context.Context, name string, opts docker.LogOptions) (io.ReadCloser, error)
 	RunningCount() int
 }
 
@@ -152,6 +155,15 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 	}
 	name := parts[0]
 
+	if len(parts) == 2 && parts[1] == "logs" {
+		if r.Method != http.MethodGet {
+			s.writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		s.handleServiceLogs(w, r, name)
+		return
+	}
+
 	if len(parts) == 2 && parts[1] == "stop" {
 		if r.Method != http.MethodPost {
 			s.writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -182,6 +194,89 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// handleServiceLogs streams a service's container logs as text/plain.
+//
+// Query parameters: tail (default "100"), follow (bool), timestamps (bool).
+// tail accepts a non-negative integer or "all"; anything else is a 400.
+func (s *Server) handleServiceLogs(w http.ResponseWriter, r *http.Request, name string) {
+	tail, err := parseTail(r.URL.Query().Get("tail"))
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	follow := parseBool(r.URL.Query().Get("follow"))
+	timestamps := parseBool(r.URL.Query().Get("timestamps"))
+
+	rc, err := s.mgr.ServiceLogs(r.Context(), name, docker.LogOptions{
+		Tail:       tail,
+		Follow:     follow,
+		Timestamps: timestamps,
+	})
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, runtime.ErrServiceNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, runtime.ErrRuntimeUnavailable):
+			status = http.StatusServiceUnavailable
+		}
+		s.writeErr(w, status, err.Error())
+		return
+	}
+	defer rc.Close()
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+
+	if follow {
+		// Flush each write so the client sees log lines as they are produced
+		// rather than buffered until the stream ends.
+		_, _ = io.Copy(&flushWriter{w: w, f: http.NewResponseController(w)}, rc)
+		return
+	}
+	_, _ = io.Copy(w, rc)
+}
+
+// flushWriter flushes the underlying response after every write. Flush errors
+// are ignored (the write result already reports a broken connection).
+type flushWriter struct {
+	w io.Writer
+	f interface{ Flush() error }
+}
+
+func (fw *flushWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	if err == nil {
+		_ = fw.f.Flush()
+	}
+	return n, err
+}
+
+// parseTail validates the tail query parameter. An empty value means "default"
+// (100 lines); "all" requests the full history; otherwise a non-negative
+// integer is required.
+func parseTail(v string) (string, error) {
+	if v == "" {
+		return "100", nil
+	}
+	if v == "all" {
+		return "all", nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return "", fmt.Errorf("invalid tail %q: must be a non-negative integer or \"all\"", v)
+	}
+	return strconv.Itoa(n), nil
+}
+
+// parseBool parses an optional boolean query flag; unrecognized values are
+// treated as false.
+func parseBool(v string) bool {
+	b, err := strconv.ParseBool(v)
+	return err == nil && b
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, code int, payload interface{}) {

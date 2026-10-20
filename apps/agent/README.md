@@ -68,6 +68,38 @@ sudo vim /etc/usenova/agent.env
 USENOVA_CONFIG=/etc/usenova/agent.env usenova-agent
 ```
 
+## Local Control API
+
+When `API_ADDR` is set the agent exposes a loopback-only HTTP API for local
+tooling (the `nova` CLI, manual testing). It refuses to bind to a non-loopback
+address and requires a bearer token (`API_TOKEN`) on every request.
+
+| Method + path | Description |
+| --- | --- |
+| `GET /services` | List managed services |
+| `POST /services` | Deploy a service |
+| `GET /services/{name}` | Get one service |
+| `DELETE /services/{name}` | Remove a service |
+| `POST /services/{name}/stop` | Stop a service |
+| `GET /services/{name}/logs` | Stream a service's container logs |
+
+The logs endpoint streams `text/plain` (stdout and stderr merged) and accepts:
+
+| Query | Default | Description |
+| --- | --- | --- |
+| `tail` | `100` | Lines from the end, or `all` |
+| `follow` | `false` | Keep streaming new lines until the client disconnects |
+| `timestamps` | `false` | Prefix each line with its RFC3339Nano timestamp |
+
+Errors use the shared `{"error": <code>, "message": <text>}` shape: `404` when
+the service is unknown (or has no container yet) and `503` when Docker is
+unavailable.
+
+```bash
+curl -N -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:9090/services/web/logs?tail=100&follow=true"
+```
+
 ## Architecture
 
 ```
