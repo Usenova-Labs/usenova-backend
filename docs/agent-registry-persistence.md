@@ -27,6 +27,11 @@ is contained to the bootstrap code in
 The parent directory is created on startup if it does not exist. The `*.db`
 pattern is already gitignored.
 
+The registry stores plaintext session tokens, so access is restricted: the
+parent directory is created with mode `0700` and the database file with mode
+`0600` (re-tightened on every start, covering files created earlier with
+looser permissions).
+
 ## Schema
 
 Defined in `apps/control-plane/internal/agent/schema.sql`:
@@ -56,7 +61,7 @@ There is no separate migration command. Bootstrap happens on every startup:
    parent directory, and applies the embedded `schema.sql` via `agent.Migrate`.
 2. The schema is applied with `CREATE TABLE IF NOT EXISTS`, so it is
    idempotent — a fresh checkout, an existing database, and a restart all
-   converge on the same schema.
+   converge on the same schema without errors.
 3. `agent.NewPersistentAgentStore(db)` loads every persisted agent into
    memory before the HTTP server starts serving.
 
@@ -65,11 +70,15 @@ inside the binary — no loose SQL files are needed at deploy time.
 
 ### Adding schema changes later
 
-Edit `schema.sql` using idempotent DDL (`ALTER TABLE ... ` guarded as needed,
-or additive `CREATE TABLE IF NOT EXISTS`). When a change can no longer be
-expressed idempotently, introduce a `schema_migrations` version table (or a
-versioned `migrations/` directory) in `db.go`; the bootstrap entry point stays
-the same.
+- **New tables**: add them to `schema.sql` with `CREATE TABLE IF NOT EXISTS`;
+  the startup bootstrap creates them on the next launch. This is the only
+  change `CREATE TABLE IF NOT EXISTS` can express.
+- **Changes to an existing table** (adding/altering columns, constraints):
+  re-running `CREATE TABLE IF NOT EXISTS` never alters a table that already
+  exists, and SQLite has no `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. Such
+  changes need an explicit versioned migration: introduce a
+  `schema_migrations` version table (or a numbered `migrations/` directory)
+  applied by `Migrate` in `db.go`. The bootstrap entry point stays the same.
 
 ## Restart behavior
 

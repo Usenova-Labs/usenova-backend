@@ -2,6 +2,7 @@ package agent
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -174,5 +175,55 @@ func TestOpenSQLite_CreatesParentDirectory(t *testing.T) {
 
 	if _, err := OpenSQLite(path); err != nil {
 		t.Fatalf("OpenSQLite: %v", err)
+	}
+}
+
+func TestOpenSQLite_RestrictsDatabaseFilePermissions(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	path := filepath.Join(dir, "registry.db")
+
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	db.Close()
+
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat database file: %v", err)
+	}
+	if perms := fileInfo.Mode().Perm(); perms&0o077 != 0 {
+		t.Errorf("database file must be owner-only, got mode %#o", perms)
+	}
+
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat database directory: %v", err)
+	}
+	if perms := dirInfo.Mode().Perm(); perms&0o077 != 0 {
+		t.Errorf("database directory must be owner-only, got mode %#o", perms)
+	}
+}
+
+func TestOpenSQLite_TightensExistingFilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.db")
+
+	// Simulate a database file created earlier with permissive mode.
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	db.Close()
+
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat database file: %v", err)
+	}
+	if perms := fileInfo.Mode().Perm(); perms&0o077 != 0 {
+		t.Errorf("expected permissions to be tightened, got mode %#o", perms)
 	}
 }
