@@ -49,10 +49,16 @@ func (s *Server) setupRoutes() {
 		// Agent management endpoints
 		agents := v1.Group("/agents")
 		{
+			// Registration is unauthenticated: this is where the session
+			// token is first issued.
 			agents.POST("/register", s.agentHandler.RegisterAgent)
-			agents.POST("/:agentID/heartbeat", s.agentHandler.HandleHeartbeat)
-			agents.GET("", s.agentHandler.ListAgents)        // Bonus endpoint
-			agents.GET("/:agentID", s.agentHandler.GetAgent) // Bonus endpoint
+
+			// Agent-scoped routes require the bearer session token issued at
+			// registration.
+			agents.POST("/:agentID/heartbeat", s.agentHandler.RequireAgentAuth(), s.agentHandler.HandleHeartbeat)
+			agents.GET("/:agentID", s.agentHandler.RequireAgentAuth(), s.agentHandler.GetAgent) // Bonus endpoint
+
+			agents.GET("", s.agentHandler.ListAgents) // Bonus endpoint
 		}
 
 		// TODO: Add other API groups

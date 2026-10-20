@@ -2,6 +2,7 @@ package agent
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"sync"
@@ -110,6 +111,25 @@ func (s *AgentStore) UpdateHeartbeat(agentID string, status AgentStatus) error {
 	return nil
 }
 
+// ValidateSessionToken reports whether token is the current session token for
+// the given agent. It returns ErrAgentNotFound when the agent is unknown and
+// ErrInvalidToken when the token does not match, so callers can distinguish the
+// two cases. Comparison is constant-time to avoid leaking token bytes through
+// timing.
+func (s *AgentStore) ValidateSessionToken(agentID, token string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	agent, exists := s.agents[agentID]
+	if !exists {
+		return ErrAgentNotFound
+	}
+	if token == "" || subtle.ConstantTimeCompare([]byte(agent.SessionToken), []byte(token)) != 1 {
+		return ErrInvalidToken
+	}
+	return nil
+}
+
 // GetAgent retrieves an agent by ID
 func (s *AgentStore) GetAgent(agentID string) (*Agent, error) {
 	s.mu.RLock()
@@ -152,6 +172,9 @@ func (s *AgentStore) DeleteAgent(agentID string) error {
 // Errors
 var (
 	ErrAgentNotFound = &AgentError{"agent not found"}
+	// ErrInvalidToken is returned when a supplied session token does not match
+	// the one issued at registration.
+	ErrInvalidToken = &AgentError{"invalid session token"}
 )
 
 // AgentError represents agent-related errors

@@ -174,6 +174,52 @@ func TestClient_SendHeartbeat(t *testing.T) {
 	})
 }
 
+// TestClient_SessionTokenAfterRegister verifies the agent stores the token from
+// registration and sends it (not the bootstrap token) on later requests.
+func TestClient_SessionTokenAfterRegister(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	var registerAuth, heartbeatAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		registerAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(RegisterResponse{
+			AgentID:      "agent-42",
+			SessionToken: "session-abc",
+		})
+	})
+	mux.HandleFunc("/api/v1/agents/agent-42/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		heartbeatAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(HeartbeatResponse{Status: "ok"})
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClient(server.URL, "bootstrap-token", log)
+	ctx := context.Background()
+
+	if _, err := client.Register(ctx, "", "1.0.0"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := client.SendHeartbeat(ctx); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+
+	if registerAuth != "Bearer bootstrap-token" {
+		t.Errorf("register Authorization = %q, want bootstrap token", registerAuth)
+	}
+	if client.GetAgentID() != "agent-42" {
+		t.Errorf("agent ID = %q, want agent-42", client.GetAgentID())
+	}
+	if heartbeatAuth != "Bearer session-abc" {
+		t.Errorf("heartbeat Authorization = %q, want session token", heartbeatAuth)
+	}
+}
+
 func TestClient_Authentication(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
