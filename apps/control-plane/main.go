@@ -11,6 +11,8 @@ import (
 
 	"github.com/byoi-platform/control-plane/internal/agent"
 	"github.com/byoi-platform/control-plane/internal/server"
+	stellarhandler "github.com/byoi-platform/control-plane/internal/stellar"
+	"github.com/byoi-platform/stellar"
 	"github.com/sirupsen/logrus"
 )
 
@@ -53,8 +55,18 @@ func main() {
 	// Initialize agent handler
 	agentHandler := agent.NewHandler(agentStore, log)
 
+	// Initialize Stellar account linking (env-driven; no keys stored).
+	stCfg, err := stellarhandler.Load()
+	if err != nil {
+		log.Fatalf("Invalid Stellar configuration: %v", err)
+	}
+	log.WithField("config", stCfg.String()).Info("Stellar configuration loaded")
+	stStore := stellarhandler.NewAccountStore()
+	stClient := stellar.NewClient(stCfg.Stellar)
+	stellarHandler := stellarhandler.NewHandler(stStore, stClient, stCfg.Stellar.Network, log)
+
 	// Setup HTTP server with all routes
-	srv := server.NewServer(agentHandler, log)
+	srv := server.NewServer(agentHandler, stellarHandler, log)
 
 	httpServer := &http.Server{
 		Addr:    ":8080",
@@ -70,6 +82,10 @@ func main() {
 		log.Info("  POST /api/v1/agents/:agentID/heartbeat")
 		log.Info("  GET  /api/v1/agents")
 		log.Info("  GET  /api/v1/agents/:agentID")
+		log.Info("  POST /api/v1/stellar/accounts")
+		log.Info("  GET  /api/v1/stellar/accounts")
+		log.Info("  DELETE /api/v1/stellar/accounts/:address")
+		log.Info("  GET  /api/v1/stellar/accounts/:address/balance")
 
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)

@@ -68,6 +68,7 @@ nova logs my-service
 
 - [Architecture Overview](./architecture.md)
 - [CLI Quick Start](../apps/cli/README.md)
+- [Stellar Testnet Setup](./stellar-testnet.md)
 - [Agent Registry Persistence](./agent-registry-persistence.md)
 - [Payment Configuration](./payments.md) (coming soon)
 - [Troubleshooting](./troubleshooting.md) (coming soon)
