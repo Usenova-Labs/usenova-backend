@@ -29,6 +29,13 @@ SESSION_TOKEN=$(curl -f -s -X POST http://localhost:8080/api/v1/agents/register 
     "version": "1.0.0",
     "capabilities": {
       "docker": true
+    },
+    "system": {
+      "os": "linux",
+      "arch": "amd64",
+      "cpu_count": 8,
+      "memory_bytes": 17179869184,
+      "docker_version": "24.0.7"
     }
   }' | tee /dev/stderr | jq -r '.session_token')
 
@@ -61,6 +68,13 @@ curl -f -s -X POST http://localhost:8080/api/v1/agents/test-agent-123/heartbeat 
     "status": {
       "uptime": "30s",
       "running_services": 0
+    },
+    "system": {
+      "os": "linux",
+      "arch": "amd64",
+      "cpu_count": 8,
+      "memory_bytes": 17179869184,
+      "docker_version": "24.0.7"
     }
   }' | jq .
 

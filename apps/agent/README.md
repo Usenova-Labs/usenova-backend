@@ -5,6 +5,7 @@ The Usenova Agent is a lightweight daemon that runs on user infrastructure to ma
 ## Features
 
 - **Automatic Registration**: Registers with Control Plane on startup
+- **Machine Inventory**: Reports OS, architecture, CPU count, memory and Docker version
 - **Heartbeat System**: Periodic status updates to maintain connectivity
 - **Docker Integration**: Detects and manages Docker-based services (coming soon)
 - **Health Monitoring**: Tracks service health and reports status
@@ -87,6 +88,42 @@ sudo vim /etc/usenova/agent.env
 USENOVA_CONFIG=/etc/usenova/agent.env usenova-agent
 ```
 
+## Registration
+
+On startup the agent registers with the control plane and reports a
+best-effort inventory of the machine it runs on:
+
+```json
+{
+  "agent_id": "optional-id",
+  "hostname": "my-host",
+  "version": "1.0.0",
+  "capabilities": { "docker": true },
+  "system": {
+    "os": "linux",
+    "arch": "amd64",
+    "cpu_count": 8,
+    "memory_bytes": 17179869184,
+    "docker_version": "24.0.7"
+  }
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `os` | Operating system (`runtime.GOOS`) |
+| `arch` | CPU architecture (`runtime.GOARCH`) |
+| `cpu_count` | Number of logical CPUs (`runtime.NumCPU()`) |
+| `memory_bytes` | Total physical memory of the host, `0` when it cannot be determined |
+| `docker_version` | Docker engine version, empty when Docker is unavailable |
+
+Every value is best-effort: the agent still registers when a value cannot be
+determined, and the control plane accepts registrations that omit the
+inventory entirely (older agents).
+
+The inventory is refreshed on every heartbeat, so dynamic values (e.g. a
+Docker engine upgrade) reach the control plane without a re-registration.
+
 ## Local Control API
 
 When `API_ADDR` is set the agent exposes a loopback-only HTTP API for local
@@ -156,9 +193,11 @@ apps/agent/
 │   │   └── config.go
 │   ├── agent/             # Main orchestration logic
 │   │   └── agent.go
-│   └── controlplane/      # Control Plane communication
-│       ├── client.go      # HTTP client
-│       └── types.go       # Request/response types
+│   ├── controlplane/      # Control Plane communication
+│   │   ├── client.go      # HTTP client
+│   │   └── types.go       # Request/response types
+│   └── systeminfo/        # Machine inventory detection
+│       └── systeminfo.go
 ├── .env.example           # Example configuration
 └── README.md              # This file
 ```

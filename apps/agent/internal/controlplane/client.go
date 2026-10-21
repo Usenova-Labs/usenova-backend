@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+
+	"github.com/byoi-platform/agent/internal/systeminfo"
 )
 
 // DockerDetector reports whether a Docker daemon is reachable.
@@ -22,6 +24,13 @@ type DockerDetector func(ctx context.Context) bool
 // ServicesCounter reports how many services the agent currently manages.
 type ServicesCounter func() int
 
+// SystemInfoDetector reports the machine inventory of the host the agent
+// runs on.
+type SystemInfoDetector func(ctx context.Context) AgentSystemInfo
+
+// DockerVersionDetector reports the version of the Docker engine available on
+// the host. It returns an empty string when the version is unknown.
+type DockerVersionDetector func(ctx context.Context) string
 // FailedServicesCounter reports how many services the agent gave up on
 // (they exhausted their restart budget or their deploy failed).
 type FailedServicesCounter func() int
@@ -47,6 +56,8 @@ type Client struct {
 	// decoupled from Docker/runtime internals.
 	dockerDetector        DockerDetector
 	servicesCounter       ServicesCounter
+	systemInfoDetector    SystemInfoDetector
+	dockerVersionDetector DockerVersionDetector
 	failedServicesCounter FailedServicesCounter
 }
 
@@ -58,8 +69,9 @@ func NewClient(baseURL, agentToken string, log *logrus.Logger) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		log:       log,
-		startTime: time.Now(),
+		log:                log,
+		startTime:          time.Now(),
+		systemInfoDetector: detectSystemInfo,
 	}
 }
 
@@ -76,18 +88,28 @@ func (c *Client) Register(ctx context.Context, agentID, version string) (*Regist
 		Docker: c.hasDocker(),
 	}
 
+	// Report the machine inventory so the control plane can reason about
+	// the capacity this agent offers.
+	system := c.systemInfo(ctx)
+
 	request := RegisterRequest{
 		AgentID:      agentID,
 		Hostname:     hostname,
 		Version:      version,
 		Capabilities: capabilities,
+		System:       &system,
 	}
 
 	c.log.WithFields(logrus.Fields{
-		"agent_id":     agentID,
-		"hostname":     hostname,
-		"version":      version,
-		"capabilities": capabilities,
+		"agent_id":       agentID,
+		"hostname":       hostname,
+		"version":        version,
+		"capabilities":   capabilities,
+		"os":             system.OS,
+		"arch":           system.Arch,
+		"cpu_count":      system.CPUCount,
+		"memory_bytes":   system.MemoryBytes,
+		"docker_version": system.DockerVersion,
 	}).Info("Registering agent with control plane")
 
 	var response RegisterResponse
@@ -131,8 +153,13 @@ func (c *Client) SendHeartbeat(ctx context.Context) error {
 		FailedServices:  c.getFailedServicesCount(),
 	}
 
+	// Refresh the machine inventory so the control plane keeps track of
+	// dynamic values (e.g. a Docker engine upgrade).
+	system := c.systemInfo(ctx)
+
 	request := HeartbeatRequest{
 		Status: status,
+		System: &system,
 	}
 
 	var response HeartbeatResponse
@@ -149,6 +176,7 @@ func (c *Client) SendHeartbeat(ctx context.Context) error {
 		"services": status.RunningServices,
 		"failed":   status.FailedServices,
 		"status":   response.Status,
+		"docker_version": system.DockerVersion,
 	}).Debug("Heartbeat sent successfully")
 
 	return nil
@@ -232,6 +260,65 @@ func (c *Client) SetDockerDetector(d DockerDetector) {
 // count reported in heartbeats.
 func (c *Client) SetServicesCounter(s ServicesCounter) {
 	c.servicesCounter = s
+}
+
+// SetSystemInfoDetector injects the source of the machine inventory reported
+// during registration and heartbeats.
+func (c *Client) SetSystemInfoDetector(d SystemInfoDetector) {
+	c.systemInfoDetector = d
+}
+
+// SetDockerVersionDetector injects the probe used to report the Docker engine
+// version as part of the machine inventory.
+func (c *Client) SetDockerVersionDetector(d DockerVersionDetector) {
+	c.dockerVersionDetector = d
+}
+
+// systemInfo returns the machine inventory reported to the control plane.
+//
+// Detection is best-effort: an agent still registers when the host details
+// cannot be determined.
+func (c *Client) systemInfo(ctx context.Context) AgentSystemInfo {
+	var system AgentSystemInfo
+
+	if c.systemInfoDetector != nil {
+		system = c.systemInfoDetector(ctx)
+	} else {
+		system = detectSystemInfo(ctx)
+	}
+
+	// The Docker version is reported by its own probe: it is only known when
+	// a Docker engine answers.
+	if version := c.dockerVersion(ctx); version != "" {
+		system.DockerVersion = version
+	}
+
+	return system
+}
+
+// dockerVersion returns the version of the Docker engine, or an empty string
+// when it is unavailable or unknown.
+func (c *Client) dockerVersion(ctx context.Context) string {
+	if c.dockerVersionDetector == nil {
+		return ""
+	}
+
+	versionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	return c.dockerVersionDetector(versionCtx)
+}
+
+// detectSystemInfo returns the machine inventory of the current host.
+func detectSystemInfo(_ context.Context) AgentSystemInfo {
+	info := systeminfo.Detect()
+
+	return AgentSystemInfo{
+		OS:          info.OS,
+		Arch:        info.Arch,
+		CPUCount:    info.CPUCount,
+		MemoryBytes: info.MemoryBytes,
+	}
 }
 
 // SetFailedServicesCounter injects the source of truth for the count of

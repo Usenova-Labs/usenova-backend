@@ -44,7 +44,12 @@ func TestPersistentAgentStore_SurvivesRestart(t *testing.T) {
 
 	store, _ := openTestRegistry(t, path)
 
-	registered, err := store.RegisterAgent("agent-1", "host-1", "1.2.3", AgentCapabilities{Docker: true})
+	registered, err := store.RegisterAgent(AgentRegistration{
+		AgentID:      "agent-1",
+		Hostname:     "host-1",
+		Version:      "1.2.3",
+		Capabilities: AgentCapabilities{Docker: true},
+	})
 	if err != nil {
 		t.Fatalf("RegisterAgent: %v", err)
 	}
@@ -88,7 +93,11 @@ func TestPersistentAgentStore_ListAfterRestart(t *testing.T) {
 
 	store, _ := openTestRegistry(t, path)
 	for _, id := range []string{"a", "b", "c"} {
-		if _, err := store.RegisterAgent(id, "host-"+id, "1.0.0", AgentCapabilities{}); err != nil {
+		if _, err := store.RegisterAgent(AgentRegistration{
+			AgentID:  id,
+			Hostname: "host-" + id,
+			Version:  "1.0.0",
+		}); err != nil {
 			t.Fatalf("RegisterAgent(%q): %v", id, err)
 		}
 	}
@@ -116,11 +125,20 @@ func TestPersistentAgentStore_ReregisterReplacesAgent(t *testing.T) {
 
 	store, _ := openTestRegistry(t, path)
 
-	first, err := store.RegisterAgent("agent-1", "host-1", "1.0.0", AgentCapabilities{})
+	first, err := store.RegisterAgent(AgentRegistration{
+		AgentID:  "agent-1",
+		Hostname: "host-1",
+		Version:  "1.0.0",
+	})
 	if err != nil {
 		t.Fatalf("first RegisterAgent: %v", err)
 	}
-	second, err := store.RegisterAgent("agent-1", "host-1", "2.0.0", AgentCapabilities{Docker: true})
+	second, err := store.RegisterAgent(AgentRegistration{
+		AgentID:      "agent-1",
+		Hostname:     "host-1",
+		Version:      "2.0.0",
+		Capabilities: AgentCapabilities{Docker: true},
+	})
 	if err != nil {
 		t.Fatalf("second RegisterAgent: %v", err)
 	}
@@ -145,7 +163,11 @@ func TestPersistentAgentStore_DeletePersists(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.db")
 
 	store, _ := openTestRegistry(t, path)
-	if _, err := store.RegisterAgent("agent-1", "host-1", "1.0.0", AgentCapabilities{}); err != nil {
+	if _, err := store.RegisterAgent(AgentRegistration{
+		AgentID:  "agent-1",
+		Hostname: "host-1",
+		Version:  "1.0.0",
+	}); err != nil {
 		t.Fatalf("RegisterAgent: %v", err)
 	}
 	if err := store.DeleteAgent("agent-1"); err != nil {

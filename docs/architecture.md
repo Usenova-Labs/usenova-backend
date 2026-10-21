@@ -148,6 +148,24 @@ The BYOI Platform enables users to deploy and manage always-on backend services 
 4. Control Plane aggregates metrics for dashboards
 ```
 
+### Agent Registration Flow
+
+```
+1. Agent starts and detects its machine inventory (best-effort):
+   OS, architecture, CPU count, total memory, Docker engine version
+2. Agent registers with the Control Plane, reporting the inventory
+3. Control Plane stores the inventory with the agent record
+4. Every heartbeat refreshes the inventory, so dynamic values (e.g. a Docker
+   engine upgrade) stay current without re-registering
+5. Control Plane returns the inventory on
+   GET /api/v1/agents and GET /api/v1/agents/{agent_id}
+```
+
+The inventory is optional on the wire: agents that do not report it keep
+registering successfully, and the control plane stores an empty inventory for
+them. It is the basis for the capacity limits, scheduling and capacity ads of
+the compute marketplace.
+
 ## Security Model
 
 ### Authentication & Authorization
