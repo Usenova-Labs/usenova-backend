@@ -232,6 +232,55 @@ func TestHeartbeat_RefreshesSystemInfo(t *testing.T) {
 	}
 }
 
+func TestHeartbeat_RejectsInvalidSystemInfo(t *testing.T) {
+	tests := []struct {
+		name   string
+		system AgentSystemInfo
+	}{
+		{name: "negative cpu count", system: AgentSystemInfo{CPUCount: -1}},
+		{name: "negative memory size", system: AgentSystemInfo{MemoryBytes: -1}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := newTestRouter(t)
+
+			stored := AgentSystemInfo{
+				OS:          "linux",
+				Arch:        "amd64",
+				CPUCount:    4,
+				MemoryBytes: 8 * 1024 * 1024 * 1024,
+			}
+
+			recorder := doRequest(t, router, http.MethodPost, "/api/v1/agents/register", RegisterRequest{
+				AgentID:  "agent-1",
+				Hostname: "host-1",
+				Version:  "1.0.0",
+				System:   &stored,
+			})
+			if recorder.Code != http.StatusCreated {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, recorder.Code, recorder.Body.String())
+			}
+
+			system := tt.system
+			recorder = doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-1/heartbeat", HeartbeatRequest{
+				Status: AgentStatus{Uptime: 30},
+				System: &system,
+			})
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+			}
+
+			// The rejected heartbeat must not have touched the store.
+			recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents/agent-1", nil)
+			agent := decodeAgent(t, recorder)
+			if agent.System != stored {
+				t.Errorf("expected system info %+v to be preserved, got %+v", stored, agent.System)
+			}
+		})
+	}
+}
+
 func TestHeartbeat_WithoutSystemInfoKeepsInventory(t *testing.T) {
 	router := newTestRouter(t)
 

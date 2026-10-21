@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -50,19 +51,8 @@ func (h *Handler) RegisterAgent(c *gin.Context) {
 
 	// The machine inventory is optional, but the values it carries must be
 	// sensible when it is reported.
-	if req.System != nil {
-		if req.System.CPUCount < 0 {
-			c.JSON(http.StatusBadRequest, ErrorResponse{
-				Error: "CPU count must not be negative",
-			})
-			return
-		}
-		if req.System.MemoryBytes < 0 {
-			c.JSON(http.StatusBadRequest, ErrorResponse{
-				Error: "Memory size must not be negative",
-			})
-			return
-		}
+	if h.rejectInvalidSystemInfo(c, req.System) {
+		return
 	}
 
 	h.logger.WithFields(logrus.Fields{
@@ -124,6 +114,13 @@ func (h *Handler) HandleHeartbeat(c *gin.Context) {
 		"services": req.Status.RunningServices,
 	}).Debug("Received heartbeat")
 
+	// The machine inventory is optional, but the values it carries must be
+	// sensible when it is reported. An invalid inventory is rejected before
+	// the store is touched.
+	if h.rejectInvalidSystemInfo(c, req.System) {
+		return
+	}
+
 	// Update heartbeat in store
 	err := h.store.UpdateHeartbeat(agentID, req.Status)
 	if err != nil {
@@ -168,6 +165,34 @@ func (h *Handler) HandleHeartbeat(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, resp)
+}
+
+// rejectInvalidSystemInfo validates a reported machine inventory and answers
+// with 400 when it is not sensible.
+//
+// The inventory is optional: a nil inventory is accepted as is. It reports
+// whether the request was rejected.
+func (h *Handler) rejectInvalidSystemInfo(c *gin.Context, system *AgentSystemInfo) bool {
+	if system == nil {
+		return false
+	}
+
+	var err error
+	switch {
+	case system.CPUCount < 0:
+		err = errors.New("CPU count must not be negative")
+	case system.MemoryBytes < 0:
+		err = errors.New("Memory size must not be negative")
+	default:
+		return false
+	}
+
+	h.logger.WithError(err).Warn("Invalid agent inventory")
+	c.JSON(http.StatusBadRequest, ErrorResponse{
+		Error: err.Error(),
+	})
+
+	return true
 }
 
 // ListAgents handles GET /api/v1/agents (bonus endpoint)
