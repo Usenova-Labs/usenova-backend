@@ -232,6 +232,13 @@ service and prints a summary. Logs of the run stay in `bin/smoke/`.
 - [Architecture Overview](./architecture.md)
 - [CLI Quick Start](../apps/cli/README.md)
 - [Agent configuration](../apps/agent/README.md)
+- [Stellar Testnet Setup](./stellar-testnet.md)
+- [Agent Registry Persistence](./agent-registry-persistence.md)
+- [Payment Configuration](./payments.md) (coming soon)
+- [Troubleshooting](./troubleshooting.md) (coming soon)
+
+## Need Help?
+
 - [GitHub Issues](https://github.com/Usenova-Labs/usenova-backend/issues)
 - [Contributing Guide](../CONTRIBUTING.md)
 
