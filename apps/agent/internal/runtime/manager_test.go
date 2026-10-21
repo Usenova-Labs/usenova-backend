@@ -42,6 +42,10 @@ type fakeRuntime struct {
 	logCalls []logCall
 	logsBody string
 	logsErr  error
+
+	// stopErr is returned by StopContainer when set. It lets tests simulate a
+	// stop that fails and has to be retried by the reconcile loop.
+	stopErr error
 }
 
 func newFakeRuntime() *fakeRuntime {
@@ -84,7 +88,7 @@ func (f *fakeRuntime) StopContainer(ctx context.Context, containerID string, tim
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, containerID)
-	return nil
+	return f.stopErr
 }
 
 func (f *fakeRuntime) RestartContainer(ctx context.Context, containerID string, timeout time.Duration) error {
@@ -128,6 +132,13 @@ func (f *fakeRuntime) startCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.started)
+}
+
+// stopCount returns how many stop operations were attempted.
+func (f *fakeRuntime) stopCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.stopped)
 }
 
 // setRunning flips the recorded state of a container so tests can simulate a
@@ -721,5 +732,180 @@ func TestManager_ExhaustedServiceStaysFailed(t *testing.T) {
 	}
 	if got := m.FailedCount(); got != 1 {
 		t.Errorf("expected 1 failed service, got %d", got)
+	}
+}
+
+func TestManager_SetRestartPolicyKeepsBaseBackoff(t *testing.T) {
+	fake := newFakeRuntime()
+	m := NewManager(fake, testLogger())
+
+	// A base backoff above the cap must not be clamped down to the cap.
+	m.SetRestartPolicy(RestartPolicy{
+		MaxRestarts: 3,
+		Window:      time.Minute,
+		Backoff:     10 * time.Minute,
+		MaxBackoff:  5 * time.Minute,
+	})
+
+	policy := m.policyForSpec(docker.ServiceSpec{})
+	if policy.MaxBackoff < policy.Backoff {
+		t.Errorf("expected the cap to be raised to the base backoff, got cap %s < base %s",
+			policy.MaxBackoff, policy.Backoff)
+	}
+}
+
+func TestManager_DeferredRestartIsNotDuplicated(t *testing.T) {
+	fake := newFakeRuntime()
+	m := NewManager(fake, testLogger())
+	m.SetRestartPolicy(RestartPolicy{MaxRestarts: 10, Window: time.Minute, Backoff: 300 * time.Millisecond})
+
+	spec := docker.ServiceSpec{
+		Name:          "worker",
+		Image:         "worker:1",
+		RestartPolicy: RestartPolicyOnFailure,
+	}
+	if _, err := m.DeployService(context.Background(), spec); err != nil {
+		t.Fatalf("deploy failed: %v", err)
+	}
+
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+	if got := fake.restartCount(); got != 1 {
+		t.Fatalf("expected 1 restart, got %d", got)
+	}
+
+	// Several unhealthy transitions while the backoff is running must not
+	// queue several deferred restarts.
+	for i := 0; i < 4; i++ {
+		if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+			t.Fatalf("onUnhealthy failed: %v", err)
+		}
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if fake.restartCount() >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Give any duplicated deferred restart time to fire.
+	time.Sleep(600 * time.Millisecond)
+
+	if got := fake.restartCount(); got != 2 {
+		t.Errorf("expected exactly 2 restarts (one immediate, one deferred), got %d", got)
+	}
+
+	svc, _ := m.GetService("worker")
+	if got := svc.RestartAttempts; got != 2 {
+		t.Errorf("expected 2 restart attempts, got %d", got)
+	}
+}
+
+func TestManager_DeferredRestartSkippedWhenServiceRecovered(t *testing.T) {
+	fake := newFakeRuntime()
+	m := NewManager(fake, testLogger())
+	m.SetRestartPolicy(RestartPolicy{MaxRestarts: 10, Window: time.Minute, Backoff: 200 * time.Millisecond})
+
+	spec := docker.ServiceSpec{
+		Name:          "worker",
+		Image:         "worker:1",
+		RestartPolicy: RestartPolicyOnFailure,
+		Ports:         map[string]string{"9090": "8080"},
+		HealthCheck: &docker.HealthConfig{
+			Type:     "http",
+			Path:     "/health",
+			Port:     8080,
+			Interval: time.Hour,
+			Retries:  1,
+		},
+	}
+	if _, err := m.DeployService(context.Background(), spec); err != nil {
+		t.Fatalf("deploy failed: %v", err)
+	}
+
+	// The service is monitored and healthy: a queued restart must not touch
+	// a container that recovered in the meantime.
+	health, ok := m.Health().GetServiceHealth("worker")
+	if !ok || !health.IsHealthy {
+		t.Fatalf("expected the service to be monitored and healthy")
+	}
+
+	// A crash spends the first restart attempt, so the health restart below
+	// is deferred by the backoff.
+	svc, _ := m.GetService("worker")
+	fake.setRunning(svc.ContainerID, false, 1)
+	m.reconcile(context.Background())
+	if got := fake.startCount(); got != 1 {
+		t.Fatalf("expected the crashed container to be started, got %d", got)
+	}
+
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+
+	// The deferred restart runs once the backoff elapsed.
+	time.Sleep(600 * time.Millisecond)
+
+	if got := fake.restartCount(); got != 0 {
+		t.Errorf("expected no restart for a recovered service, got %d", got)
+	}
+
+	// A skipped restart must not spend part of the restart budget.
+	svc, _ = m.GetService("worker")
+	if got := svc.RestartAttempts; got != 1 {
+		t.Errorf("expected the skipped restart not to count as an attempt, got %d attempts", got)
+	}
+}
+
+func TestManager_ReconcileRetriesStopOfExhaustedService(t *testing.T) {
+	fake := newFakeRuntime()
+	m := NewManager(fake, testLogger())
+	m.SetRestartPolicy(RestartPolicy{MaxRestarts: 1, Window: time.Minute})
+
+	spec := docker.ServiceSpec{
+		Name:          "worker",
+		Image:         "worker:1",
+		RestartPolicy: RestartPolicyOnFailure,
+	}
+	if _, err := m.DeployService(context.Background(), spec); err != nil {
+		t.Fatalf("deploy failed: %v", err)
+	}
+
+	// Use up the restart budget so the service is marked failed.
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+	svc, _ := m.GetService("worker")
+	if svc.State != ServiceStateFailed {
+		t.Fatalf("expected failed state, got %s", svc.State)
+	}
+
+	// The stop fails, so the service stays around with a stop intent.
+	fake.mu.Lock()
+	fake.stopErr = errors.New("daemon busy")
+	fake.mu.Unlock()
+
+	if err := m.StopService(context.Background(), "worker"); err == nil {
+		t.Fatalf("expected the stop to fail")
+	}
+	if got := fake.stopCount(); got != 1 {
+		t.Fatalf("expected 1 stop attempt, got %d", got)
+	}
+
+	// The reconcile loop must retry the stop of an exhausted service.
+	fake.mu.Lock()
+	fake.stopErr = nil
+	fake.mu.Unlock()
+
+	m.reconcile(context.Background())
+
+	if got := fake.stopCount(); got != 2 {
+		t.Errorf("expected the reconcile loop to retry the stop, got %d stop attempts", got)
 	}
 }

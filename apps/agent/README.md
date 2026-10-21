@@ -22,7 +22,7 @@ The agent is configured via environment variables:
 | `HEARTBEAT_INTERVAL` | No | `30s` | Heartbeat frequency |
 | `RESTART_MAX_RESTARTS` | No | `3` | Restarts allowed per window before a service is failed (`0` = unlimited) |
 | `RESTART_WINDOW` | No | `10m` | Sliding window over which restart attempts are counted |
-| `RESTART_BACKOFF` | No | `30s` | Base delay between restart attempts (doubles with every attempt) |
+| `RESTART_BACKOFF` | No | `30s` | Base delay between restart attempts (doubles with every attempt, capped at 5m) |
 | `DEBUG` | No | - | Enable debug logging |
 
 ### Restart limits
@@ -36,6 +36,10 @@ agent leaves it alone until it is deployed again.
 The limits above apply to every service; a deployment can override them with
 `max_restarts`, `restart_window_seconds` and `restart_backoff_seconds` in the
 service spec (`nova deploy --max-restarts 5 --restart-window 300`).
+
+The base delay doubles with every attempt and is capped at 5m. A base delay
+configured above that cap is never shortened: the cap is raised to the
+configured base delay instead.
 
 ### Example Configuration
 

@@ -120,6 +120,10 @@ type Manager struct {
 	// container-mutating work may outlive the manager.
 	scheduled sync.WaitGroup
 
+	// restartSeq numbers the deferred restarts so a service can tell which
+	// queued attempt it is holding.
+	restartSeq uint64
+
 	// opLocks serialise container-mutating operations per service name. They
 	// are separate from mu so long-running network work (image pulls) never
 	// blocks short stop/restart operations or vice-versa.
@@ -244,6 +248,10 @@ func (m *Manager) Stop(ctx context.Context) {
 func (m *Manager) SetRestartPolicy(policy RestartPolicy) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if policy.MaxBackoff > 0 && policy.MaxBackoff < policy.Backoff {
+		// Never cap the configured base backoff below itself.
+		policy.MaxBackoff = policy.Backoff
+	}
 	m.restartPolicy = policy
 }
 
@@ -482,8 +490,10 @@ func (m *Manager) StopService(ctx context.Context, name string) error {
 	if m.services[name] == svc && svc.generation == gen {
 		svc.State = ServiceStateStopped
 		svc.LastError = nil
+		// An intentional stop ends the current restart budget: the service
+		// can be started again without being marked failed.
+		svc.restartExhausted = false
 		if svc.restart != nil {
-			// An intentional stop ends the current restart budget.
 			svc.restart.reset()
 			svc.RestartAttempts = 0
 		}
@@ -760,12 +770,25 @@ func (m *Manager) recordRestartAttempt(name string, svc *Service, gen uint64) {
 // backoff has elapsed. The attempt is re-evaluated when it runs, so a service
 // that exceeded its restart limit in the meantime is failed instead of
 // restarted.
+//
+// Only one deferred restart is queued per service: a second unhealthy
+// transition (or a reconcile pass) must not stack up another attempt that
+// would restart the container again at the next backoff boundary.
 func (m *Manager) scheduleRestart(name string, svc *Service, gen uint64, at time.Time, kind restartKind) {
 	m.mu.Lock()
-	if m.stopped {
+	if m.stopped || !m.isSameLocked(name, svc, gen) {
 		m.mu.Unlock()
 		return
 	}
+	if svc.restartPendingSeq != 0 {
+		// A deferred restart is already queued for this service.
+		m.mu.Unlock()
+		m.log.WithField("service", name).Debug("Restart already deferred; not queueing another one")
+		return
+	}
+	m.restartSeq++
+	seq := m.restartSeq
+	svc.restartPendingSeq = seq
 	m.scheduled.Add(1)
 	m.mu.Unlock()
 
@@ -780,6 +803,7 @@ func (m *Manager) scheduleRestart(name string, svc *Service, gen uint64, at time
 
 	go func() {
 		defer m.scheduled.Done()
+		defer m.clearRestartPending(name, svc, gen, seq)
 
 		timer := time.NewTimer(time.Until(at))
 		defer timer.Stop()
@@ -788,6 +812,18 @@ func (m *Manager) scheduleRestart(name string, svc *Service, gen uint64, at time
 		case <-ctx.Done():
 			return
 		case <-m.stopCh:
+			return
+		}
+
+		// Release the slot before the attempt so an attempt that is deferred
+		// again can queue itself.
+		m.clearRestartPending(name, svc, gen, seq)
+
+		// The service may have recovered while the backoff was running.
+		// Restarting it now would be harmful, and it must not spend part of
+		// the restart budget either.
+		if kind == restartKindHealth && m.serviceRecovered(name) {
+			m.log.WithField("service", name).Info("Service recovered; skipping deferred restart")
 			return
 		}
 
@@ -800,6 +836,27 @@ func (m *Manager) scheduleRestart(name string, svc *Service, gen uint64, at time
 			m.log.WithError(err).WithField("service", name).Warn("Deferred restart failed")
 		}
 	}()
+}
+
+// clearRestartPending releases the deferred restart slot of a service. The
+// sequence number makes it a no-op when a newer attempt already took the slot.
+func (m *Manager) clearRestartPending(name string, svc *Service, gen uint64, seq uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.isSameLocked(name, svc, gen) {
+		return
+	}
+	if svc.restartPendingSeq == seq {
+		svc.restartPendingSeq = 0
+	}
+}
+
+// serviceRecovered reports whether the health monitor considers the service
+// healthy again. A service that is not monitored is never considered
+// recovered.
+func (m *Manager) serviceRecovered(name string) bool {
+	h, ok := m.monitor.GetServiceHealth(name)
+	return ok && h.IsHealthy
 }
 
 // performRestart performs the container operation of an allowed restart
@@ -971,18 +1028,19 @@ func (m *Manager) reconcileService(ctx context.Context, name string, svc *Servic
 	exhausted := svc.restartExhausted
 	m.mu.RUnlock()
 
-	if exhausted {
-		// The service used up its restart budget: it stays failed until it
-		// is deployed again.
-		return
-	}
-
 	switch desired {
 	case ServiceStateRemoved:
 		m.reconcileRemoval(ctx, name, svc, gen, id)
 		return
 	case ServiceStateStopped:
 		m.reconcileStopped(ctx, name, svc, gen, id)
+		return
+	}
+
+	if exhausted {
+		// The service used up its restart budget: it stays failed until it
+		// is deployed again. Stop and removal intents are handled above, so
+		// a failed stop or removal can still be retried.
 		return
 	}
 

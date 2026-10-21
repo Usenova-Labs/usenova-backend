@@ -86,6 +86,12 @@ type Service struct {
 	// reconcile loop leaves it alone: it stays failed until it is deployed
 	// again.
 	restartExhausted bool
+
+	// restartPendingSeq is the sequence number of the deferred restart that
+	// is currently queued for this service (0 means none is queued). The
+	// number identifies the queued attempt, so a goroutine that finishes late
+	// cannot clear a newer pending attempt.
+	restartPendingSeq uint64
 }
 
 // ShortID returns a shortened container ID for logging
