@@ -120,3 +120,96 @@ func TestLoad(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadRestartPolicy(t *testing.T) {
+	cleanup := func() {
+		os.Unsetenv("RESTART_MAX_RESTARTS")
+		os.Unsetenv("RESTART_WINDOW")
+		os.Unsetenv("RESTART_BACKOFF")
+	}
+	defer cleanup()
+
+	os.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+	os.Setenv("AGENT_TOKEN", "test-token")
+
+	t.Run("defaults", func(t *testing.T) {
+		cleanup()
+
+		cfg, err := Load("test-version")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if cfg.RestartMaxRestarts != 3 {
+			t.Errorf("Expected default RestartMaxRestarts to be 3, got %d", cfg.RestartMaxRestarts)
+		}
+		if cfg.RestartWindow != 10*time.Minute {
+			t.Errorf("Expected default RestartWindow to be 10m, got %v", cfg.RestartWindow)
+		}
+		if cfg.RestartBackoff != 30*time.Second {
+			t.Errorf("Expected default RestartBackoff to be 30s, got %v", cfg.RestartBackoff)
+		}
+	})
+
+	t.Run("custom values", func(t *testing.T) {
+		cleanup()
+		os.Setenv("RESTART_MAX_RESTARTS", "5")
+		os.Setenv("RESTART_WINDOW", "1m")
+		os.Setenv("RESTART_BACKOFF", "10s")
+
+		cfg, err := Load("test-version")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if cfg.RestartMaxRestarts != 5 {
+			t.Errorf("Expected RestartMaxRestarts to be 5, got %d", cfg.RestartMaxRestarts)
+		}
+		if cfg.RestartWindow != time.Minute {
+			t.Errorf("Expected RestartWindow to be 1m, got %v", cfg.RestartWindow)
+		}
+		if cfg.RestartBackoff != 10*time.Second {
+			t.Errorf("Expected RestartBackoff to be 10s, got %v", cfg.RestartBackoff)
+		}
+	})
+
+	t.Run("window as seconds", func(t *testing.T) {
+		cleanup()
+		os.Setenv("RESTART_WINDOW", "90")
+
+		cfg, err := Load("test-version")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if cfg.RestartWindow != 90*time.Second {
+			t.Errorf("Expected RestartWindow to be 90s, got %v", cfg.RestartWindow)
+		}
+	})
+
+	t.Run("invalid max restarts", func(t *testing.T) {
+		cleanup()
+		os.Setenv("RESTART_MAX_RESTARTS", "many")
+
+		if _, err := Load("test-version"); err == nil {
+			t.Error("Expected error for invalid RESTART_MAX_RESTARTS")
+		}
+	})
+
+	t.Run("invalid window", func(t *testing.T) {
+		cleanup()
+		os.Setenv("RESTART_WINDOW", "later")
+
+		if _, err := Load("test-version"); err == nil {
+			t.Error("Expected error for invalid RESTART_WINDOW")
+		}
+	})
+
+	t.Run("non-positive window", func(t *testing.T) {
+		cleanup()
+		os.Setenv("RESTART_WINDOW", "0s")
+
+		if _, err := Load("test-version"); err == nil {
+			t.Error("Expected error for a non-positive RESTART_WINDOW")
+		}
+	})
+}

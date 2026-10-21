@@ -41,6 +41,7 @@ func agentCmd() *cobra.Command {
 			}
 			fmt.Printf("Agent API: %s (ok)\n", agentURL)
 			fmt.Printf("Running services: %d\n", lr.Running)
+			fmt.Printf("Failed services: %d\n", lr.Failed)
 			return nil
 		},
 	})
@@ -53,6 +54,7 @@ func deployCmd() *cobra.Command {
 	var envs []string
 	var healthPath string
 	var healthPort int
+	var maxRestarts, restartWindow, restartBackoff int
 	c := &cobra.Command{
 		Use:   "deploy",
 		Short: "Deploy a service to local agent",
@@ -69,6 +71,15 @@ func deployCmd() *cobra.Command {
 			}
 			if restart != "" {
 				spec["restart_policy"] = restart
+			}
+			if maxRestarts != 0 {
+				spec["max_restarts"] = maxRestarts
+			}
+			if restartWindow > 0 {
+				spec["restart_window_seconds"] = restartWindow
+			}
+			if restartBackoff > 0 {
+				spec["restart_backoff_seconds"] = restartBackoff
 			}
 			if len(ports) > 0 {
 				pm := map[string]string{}
@@ -121,6 +132,9 @@ func deployCmd() *cobra.Command {
 	c.Flags().StringArrayVar(&envs, "env", nil, "env KEY=VALUE (repeatable)")
 	c.Flags().StringVar(&healthPath, "health-path", "", "health check HTTP path")
 	c.Flags().IntVar(&healthPort, "health-port", 0, "health check port (container or host mapping target)")
+	c.Flags().IntVar(&maxRestarts, "max-restarts", 0, "max restarts per window (0 = agent default, -1 = unlimited)")
+	c.Flags().IntVar(&restartWindow, "restart-window", 0, "restart window in seconds (0 = agent default)")
+	c.Flags().IntVar(&restartBackoff, "restart-backoff", 0, "base restart backoff in seconds (0 = agent default)")
 	c.MarkFlagRequired("name")
 	c.MarkFlagRequired("image")
 	return c

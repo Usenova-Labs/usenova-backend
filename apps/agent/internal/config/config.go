@@ -20,6 +20,19 @@ type Config struct {
 	// Local control API (optional, disabled unless API_ADDR is set).
 	APIAddr  string
 	APIToken string
+
+	// RestartMaxRestarts is how many agent-initiated restarts a service may
+	// get inside RestartWindow before the agent gives up on it. Values <= 0
+	// disable the limit.
+	RestartMaxRestarts int
+
+	// RestartWindow is the sliding window over which restart attempts are
+	// counted.
+	RestartWindow time.Duration
+
+	// RestartBackoff is the base delay between restart attempts. It doubles
+	// with every consecutive attempt.
+	RestartBackoff time.Duration
 }
 
 // Load reads configuration from environment variables
@@ -58,22 +71,11 @@ func Load(version string) (*Config, error) {
 	}
 
 	// Optional: Heartbeat interval (default: 30s)
-	heartbeatStr := os.Getenv("HEARTBEAT_INTERVAL")
-	if heartbeatStr == "" {
-		config.HeartbeatInterval = 30 * time.Second
-	} else {
-		// Try parsing as duration first (e.g., "30s", "1m")
-		if interval, err := time.ParseDuration(heartbeatStr); err == nil {
-			config.HeartbeatInterval = interval
-		} else {
-			// Try parsing as seconds
-			if seconds, err := strconv.Atoi(heartbeatStr); err == nil {
-				config.HeartbeatInterval = time.Duration(seconds) * time.Second
-			} else {
-				return nil, fmt.Errorf("invalid HEARTBEAT_INTERVAL format: %s (use duration like '30s' or seconds as integer)", heartbeatStr)
-			}
-		}
+	heartbeat, err := durationEnv("HEARTBEAT_INTERVAL", 30*time.Second)
+	if err != nil {
+		return nil, err
 	}
+	config.HeartbeatInterval = heartbeat
 
 	// Validate heartbeat interval bounds
 	if config.HeartbeatInterval < 5*time.Second {
@@ -83,7 +85,56 @@ func Load(version string) (*Config, error) {
 		return nil, fmt.Errorf("HEARTBEAT_INTERVAL must not exceed 10 minutes")
 	}
 
+	// Optional: restart limits (defaults: 3 restarts per 10m window, 30s
+	// backoff). They keep a crash-looping service from being restarted
+	// forever.
+	maxRestarts := os.Getenv("RESTART_MAX_RESTARTS")
+	if maxRestarts == "" {
+		config.RestartMaxRestarts = 3
+	} else {
+		parsed, err := strconv.Atoi(maxRestarts)
+		if err != nil {
+			return nil, fmt.Errorf("invalid RESTART_MAX_RESTARTS format: %s (use an integer)", maxRestarts)
+		}
+		config.RestartMaxRestarts = parsed
+	}
+
+	window, err := durationEnv("RESTART_WINDOW", 10*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	config.RestartWindow = window
+
+	backoff, err := durationEnv("RESTART_BACKOFF", 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	config.RestartBackoff = backoff
+
+	if config.RestartWindow <= 0 {
+		return nil, fmt.Errorf("RESTART_WINDOW must be positive")
+	}
+	if config.RestartBackoff < 0 {
+		return nil, fmt.Errorf("RESTART_BACKOFF must not be negative")
+	}
+
 	return config, nil
+}
+
+// durationEnv reads a duration from the environment. It accepts a duration
+// string ("30s", "1m") or a plain number of seconds.
+func durationEnv(name string, def time.Duration) (time.Duration, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def, nil
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		return d, nil
+	}
+	if seconds, err := strconv.Atoi(raw); err == nil {
+		return time.Duration(seconds) * time.Second, nil
+	}
+	return 0, fmt.Errorf("invalid %s format: %s (use duration like '30s' or seconds as integer)", name, raw)
 }
 
 // String returns a string representation of the config (without sensitive data)
@@ -92,6 +143,7 @@ func (c *Config) String() string {
 	if c.APIAddr != "" {
 		api = c.APIAddr
 	}
-	return fmt.Sprintf("Config{ControlPlaneURL=%s, AgentID=%s, HeartbeatInterval=%v, Version=%s, API=%s}",
-		c.ControlPlaneURL, c.AgentID, c.HeartbeatInterval, c.Version, api)
+	return fmt.Sprintf("Config{ControlPlaneURL=%s, AgentID=%s, HeartbeatInterval=%v, Version=%s, API=%s, Restarts=%d/%v backoff=%v}",
+		c.ControlPlaneURL, c.AgentID, c.HeartbeatInterval, c.Version, api,
+		c.RestartMaxRestarts, c.RestartWindow, c.RestartBackoff)
 }

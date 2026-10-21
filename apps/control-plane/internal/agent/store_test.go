@@ -55,3 +55,28 @@ func TestRegisterAgent_SessionTokenIsRandomAndOpaque(t *testing.T) {
 		t.Errorf("expected 64-char hex token, got %d chars", len(first.SessionToken))
 	}
 }
+
+func TestUpdateHeartbeat_KeepsFailedServices(t *testing.T) {
+	s := NewAgentStore()
+
+	a, err := s.RegisterAgent("my-agent", "host-1", "1.0.0", AgentCapabilities{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	status := AgentStatus{Uptime: 42, RunningServices: 3, FailedServices: 2}
+	if err := s.UpdateHeartbeat(a.AgentID, status); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	stored, err := s.GetAgent(a.AgentID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stored.Status.RunningServices != 3 {
+		t.Errorf("expected 3 running services, got %d", stored.Status.RunningServices)
+	}
+	if stored.Status.FailedServices != 2 {
+		t.Errorf("expected 2 failed services, got %d", stored.Status.FailedServices)
+	}
+}

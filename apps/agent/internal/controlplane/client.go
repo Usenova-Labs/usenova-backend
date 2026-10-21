@@ -22,6 +22,10 @@ type DockerDetector func(ctx context.Context) bool
 // ServicesCounter reports how many services the agent currently manages.
 type ServicesCounter func() int
 
+// FailedServicesCounter reports how many services the agent gave up on
+// (they exhausted their restart budget or their deploy failed).
+type FailedServicesCounter func() int
+
 // Client handles communication with the Control Plane API
 type Client struct {
 	baseURL    string
@@ -41,8 +45,9 @@ type Client struct {
 
 	// Injected by the agent at startup so the control plane client stays
 	// decoupled from Docker/runtime internals.
-	dockerDetector  DockerDetector
-	servicesCounter ServicesCounter
+	dockerDetector        DockerDetector
+	servicesCounter       ServicesCounter
+	failedServicesCounter FailedServicesCounter
 }
 
 // NewClient creates a new Control Plane API client
@@ -123,6 +128,7 @@ func (c *Client) SendHeartbeat(ctx context.Context) error {
 	status := AgentStatus{
 		Uptime:          time.Since(c.startTime),
 		RunningServices: c.getRunningServicesCount(),
+		FailedServices:  c.getFailedServicesCount(),
 	}
 
 	request := HeartbeatRequest{
@@ -141,6 +147,7 @@ func (c *Client) SendHeartbeat(ctx context.Context) error {
 		"agent_id": agentID,
 		"uptime":   status.Uptime.Round(time.Second),
 		"services": status.RunningServices,
+		"failed":   status.FailedServices,
 		"status":   response.Status,
 	}).Debug("Heartbeat sent successfully")
 
@@ -227,6 +234,12 @@ func (c *Client) SetServicesCounter(s ServicesCounter) {
 	c.servicesCounter = s
 }
 
+// SetFailedServicesCounter injects the source of truth for the count of
+// failed services reported in heartbeats.
+func (c *Client) SetFailedServicesCounter(s FailedServicesCounter) {
+	c.failedServicesCounter = s
+}
+
 // hasDocker checks if Docker is available on this system
 func (c *Client) hasDocker() bool {
 	if c.dockerDetector != nil {
@@ -249,6 +262,14 @@ func (c *Client) hasDocker() bool {
 func (c *Client) getRunningServicesCount() int {
 	if c.servicesCounter != nil {
 		return c.servicesCounter()
+	}
+	return 0
+}
+
+// getFailedServicesCount returns the number of services this agent gave up on
+func (c *Client) getFailedServicesCount() int {
+	if c.failedServicesCounter != nil {
+		return c.failedServicesCounter()
 	}
 	return 0
 }

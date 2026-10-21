@@ -51,6 +51,11 @@ nova deploy \
 (`health_check` in the service spec; the type is derived as `http` when a path
 or port is given, otherwise `tcp`).
 
+`--max-restarts`, `--restart-window` and `--restart-backoff` bound how often
+the agent restarts a failing service (defaults come from the agent
+configuration). Once the budget is used up the service is marked `failed` and
+the agent stops restarting it.
+
 Deployments can outlive `--timeout`; when that happens the CLI queries the
 service state and reports it instead of a bare timeout.
 

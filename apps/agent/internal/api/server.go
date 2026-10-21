@@ -37,6 +37,7 @@ type ServiceManager interface {
 	GetService(name string) (*runtime.Service, bool)
 	ServiceLogs(ctx context.Context, name string, opts docker.LogOptions) (io.ReadCloser, error)
 	RunningCount() int
+	FailedCount() int
 }
 
 // Server is a loopback-only HTTP control API.
@@ -125,6 +126,7 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		s.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"running":  s.mgr.RunningCount(),
+			"failed":   s.mgr.FailedCount(),
 			"services": s.mgr.ListServices(),
 		})
 	case http.MethodPost:

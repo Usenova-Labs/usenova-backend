@@ -89,6 +89,20 @@ type ServiceSpec struct {
 	Resources     *ResourceLimits   `json:"resources,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	DependsOn     []string          `json:"depends_on,omitempty"`
+
+	// MaxRestarts caps how many times the agent restarts this service
+	// inside RestartWindowSeconds. Zero inherits the agent-wide limit, a
+	// negative value disables the limit entirely.
+	MaxRestarts int `json:"max_restarts,omitempty"`
+
+	// RestartWindowSeconds is the sliding window (in seconds) over which
+	// restart attempts are counted. Zero inherits the agent-wide window.
+	RestartWindowSeconds int `json:"restart_window_seconds,omitempty"`
+
+	// RestartBackoffSeconds is the base delay (in seconds) between restart
+	// attempts; it doubles with every consecutive attempt. Zero inherits the
+	// agent-wide backoff.
+	RestartBackoffSeconds int `json:"restart_backoff_seconds,omitempty"`
 }
 
 // ResourceLimits defines resource constraints
