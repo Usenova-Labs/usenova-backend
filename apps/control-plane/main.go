@@ -29,9 +29,26 @@ func main() {
 		"commit":  commit,
 	}).Info("Usenova Control Plane starting")
 
-	// Initialize agent store
-	agentStore := agent.NewAgentStore()
-	log.Info("Agent store initialized")
+	// Initialize persistent agent registry (SQLite)
+	dbPath := os.Getenv("CONTROL_PLANE_DB_PATH")
+	if dbPath == "" {
+		dbPath = "data/control-plane.db"
+	}
+
+	db, err := agent.OpenSQLite(dbPath)
+	if err != nil {
+		log.WithError(err).Fatalf("Failed to open agent registry database")
+	}
+	defer db.Close()
+
+	agentStore, err := agent.NewPersistentAgentStore(db)
+	if err != nil {
+		log.WithError(err).Fatalf("Failed to load agent registry")
+	}
+	log.WithFields(logrus.Fields{
+		"path":   dbPath,
+		"agents": len(agentStore.ListAgents()),
+	}).Info("Agent registry initialized")
 
 	// Initialize agent handler
 	agentHandler := agent.NewHandler(agentStore, log)
