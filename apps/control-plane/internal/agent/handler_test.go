@@ -11,8 +11,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// newTestRouter builds a router exposing the agent endpoints, mirroring the
-// routes registered by the control plane server.
 func newTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 
@@ -26,15 +24,14 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	router := gin.New()
 	agents := router.Group("/api/v1/agents")
 	agents.POST("/register", handler.RegisterAgent)
-	agents.POST("/:agentID/heartbeat", handler.HandleHeartbeat)
+	agents.POST("/:agentID/heartbeat", handler.RequireAgentAuth(), handler.HandleHeartbeat)
 	agents.GET("", handler.ListAgents)
-	agents.GET("/:agentID", handler.GetAgent)
+	agents.GET("/:agentID", handler.RequireAgentAuth(), handler.GetAgent)
 
 	return router
 }
 
-// doRequest performs a JSON request against the router.
-func doRequest(t *testing.T, router *gin.Engine, method, path string, body interface{}) *httptest.ResponseRecorder {
+func doRequest(t *testing.T, router *gin.Engine, method, path string, body interface{}, token string) *httptest.ResponseRecorder {
 	t.Helper()
 
 	var payload []byte
@@ -48,6 +45,9 @@ func doRequest(t *testing.T, router *gin.Engine, method, path string, body inter
 
 	req := httptest.NewRequest(method, path, bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, req)
@@ -55,7 +55,6 @@ func doRequest(t *testing.T, router *gin.Engine, method, path string, body inter
 	return recorder
 }
 
-// decodeAgent decodes an agent from a JSON response.
 func decodeAgent(t *testing.T, recorder *httptest.ResponseRecorder) Agent {
 	t.Helper()
 
@@ -65,6 +64,26 @@ func decodeAgent(t *testing.T, recorder *httptest.ResponseRecorder) Agent {
 	}
 
 	return agent
+}
+
+func decodeRegisterResponse(t *testing.T, recorder *httptest.ResponseRecorder) RegisterResponse {
+	t.Helper()
+
+	var resp RegisterResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode registration response: %v", err)
+	}
+	return resp
+}
+
+func registerAgent(t *testing.T, router *gin.Engine, req RegisterRequest) RegisterResponse {
+	t.Helper()
+
+	recorder := doRequest(t, router, http.MethodPost, "/api/v1/agents/register", req, "")
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, recorder.Code, recorder.Body.String())
+	}
+	return decodeRegisterResponse(t, recorder)
 }
 
 func TestRegisterAgent_ReturnsSystemInfo(t *testing.T) {
@@ -78,18 +97,15 @@ func TestRegisterAgent_ReturnsSystemInfo(t *testing.T) {
 		DockerVersion: "24.0.7",
 	}
 
-	recorder := doRequest(t, router, http.MethodPost, "/api/v1/agents/register", RegisterRequest{
+	reg := registerAgent(t, router, RegisterRequest{
 		AgentID:      "agent-1",
 		Hostname:     "host-1",
 		Version:      "1.0.0",
 		Capabilities: AgentCapabilities{Docker: true},
 		System:       &system,
 	})
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, recorder.Code, recorder.Body.String())
-	}
 
-	recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents/agent-1", nil)
+	recorder := doRequest(t, router, http.MethodGet, "/api/v1/agents/agent-1", nil, reg.SessionToken)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
 	}
@@ -103,18 +119,18 @@ func TestRegisterAgent_ReturnsSystemInfo(t *testing.T) {
 func TestRegisterAgent_WithoutSystemInfoStaysCompatible(t *testing.T) {
 	router := newTestRouter(t)
 
-	// An agent that predates the inventory reports no system object.
 	recorder := doRequest(t, router, http.MethodPost, "/api/v1/agents/register", map[string]interface{}{
 		"agent_id":     "legacy-agent",
 		"hostname":     "host-1",
 		"version":      "1.0.0",
 		"capabilities": map[string]bool{"docker": true},
-	})
+	}, "")
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, recorder.Code, recorder.Body.String())
 	}
+	reg := decodeRegisterResponse(t, recorder)
 
-	recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents/legacy-agent", nil)
+	recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents/legacy-agent", nil, reg.SessionToken)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
 	}
@@ -144,7 +160,7 @@ func TestRegisterAgent_RejectsInvalidSystemInfo(t *testing.T) {
 				Hostname: "host-1",
 				Version:  "1.0.0",
 				System:   &system,
-			})
+			}, "")
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, recorder.Code, recorder.Body.String())
 			}
@@ -162,17 +178,14 @@ func TestListAgents_ReturnsSystemInfo(t *testing.T) {
 		MemoryBytes: 4 * 1024 * 1024 * 1024,
 	}
 
-	recorder := doRequest(t, router, http.MethodPost, "/api/v1/agents/register", RegisterRequest{
+	registerAgent(t, router, RegisterRequest{
 		AgentID:  "agent-1",
 		Hostname: "host-1",
 		Version:  "1.0.0",
 		System:   &system,
 	})
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, recorder.Code, recorder.Body.String())
-	}
 
-	recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents", nil)
+	recorder := doRequest(t, router, http.MethodGet, "/api/v1/agents", nil, "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
 	}
@@ -193,7 +206,7 @@ func TestListAgents_ReturnsSystemInfo(t *testing.T) {
 func TestHeartbeat_RefreshesSystemInfo(t *testing.T) {
 	router := newTestRouter(t)
 
-	recorder := doRequest(t, router, http.MethodPost, "/api/v1/agents/register", RegisterRequest{
+	reg := registerAgent(t, router, RegisterRequest{
 		AgentID:  "agent-1",
 		Hostname: "host-1",
 		Version:  "1.0.0",
@@ -205,9 +218,6 @@ func TestHeartbeat_RefreshesSystemInfo(t *testing.T) {
 			DockerVersion: "24.0.7",
 		},
 	})
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, recorder.Code, recorder.Body.String())
-	}
 
 	updated := AgentSystemInfo{
 		OS:            "linux",
@@ -217,15 +227,15 @@ func TestHeartbeat_RefreshesSystemInfo(t *testing.T) {
 		DockerVersion: "25.0.1",
 	}
 
-	recorder = doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-1/heartbeat", HeartbeatRequest{
+	recorder := doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-1/heartbeat", HeartbeatRequest{
 		Status: AgentStatus{Uptime: 30, RunningServices: 1},
 		System: &updated,
-	})
+	}, reg.SessionToken)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
 	}
 
-	recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents/agent-1", nil)
+	recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents/agent-1", nil, reg.SessionToken)
 	agent := decodeAgent(t, recorder)
 	if agent.System != updated {
 		t.Errorf("expected refreshed system info %+v, got %+v", updated, agent.System)
@@ -252,27 +262,23 @@ func TestHeartbeat_RejectsInvalidSystemInfo(t *testing.T) {
 				MemoryBytes: 8 * 1024 * 1024 * 1024,
 			}
 
-			recorder := doRequest(t, router, http.MethodPost, "/api/v1/agents/register", RegisterRequest{
+			reg := registerAgent(t, router, RegisterRequest{
 				AgentID:  "agent-1",
 				Hostname: "host-1",
 				Version:  "1.0.0",
 				System:   &stored,
 			})
-			if recorder.Code != http.StatusCreated {
-				t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, recorder.Code, recorder.Body.String())
-			}
 
 			system := tt.system
-			recorder = doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-1/heartbeat", HeartbeatRequest{
+			recorder := doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-1/heartbeat", HeartbeatRequest{
 				Status: AgentStatus{Uptime: 30},
 				System: &system,
-			})
+			}, reg.SessionToken)
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, recorder.Code, recorder.Body.String())
 			}
 
-			// The rejected heartbeat must not have touched the store.
-			recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents/agent-1", nil)
+			recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents/agent-1", nil, reg.SessionToken)
 			agent := decodeAgent(t, recorder)
 			if agent.System != stored {
 				t.Errorf("expected system info %+v to be preserved, got %+v", stored, agent.System)
@@ -291,26 +297,121 @@ func TestHeartbeat_WithoutSystemInfoKeepsInventory(t *testing.T) {
 		MemoryBytes: 8 * 1024 * 1024 * 1024,
 	}
 
-	recorder := doRequest(t, router, http.MethodPost, "/api/v1/agents/register", RegisterRequest{
+	reg := registerAgent(t, router, RegisterRequest{
 		AgentID:  "agent-1",
 		Hostname: "host-1",
 		Version:  "1.0.0",
 		System:   &system,
 	})
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, recorder.Code, recorder.Body.String())
-	}
 
-	recorder = doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-1/heartbeat", HeartbeatRequest{
+	recorder := doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-1/heartbeat", HeartbeatRequest{
 		Status: AgentStatus{Uptime: 30},
-	})
+	}, reg.SessionToken)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
 	}
 
-	recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents/agent-1", nil)
+	recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents/agent-1", nil, reg.SessionToken)
 	agent := decodeAgent(t, recorder)
 	if agent.System != system {
 		t.Errorf("expected system info to be preserved, got %+v", agent.System)
+	}
+}
+
+func TestHeartbeat_WithValidSessionToken(t *testing.T) {
+	router := newTestRouter(t)
+	reg := registerAgent(t, router, RegisterRequest{AgentID: "agent-1", Hostname: "host-1", Version: "1.0.0"})
+
+	rec := doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-1/heartbeat", HeartbeatRequest{Status: AgentStatus{RunningServices: 1}}, reg.SessionToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid token, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHeartbeat_RejectsMissingToken(t *testing.T) {
+	router := newTestRouter(t)
+	registerAgent(t, router, RegisterRequest{AgentID: "agent-1", Hostname: "host-1", Version: "1.0.0"})
+
+	rec := doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-1/heartbeat", HeartbeatRequest{Status: AgentStatus{RunningServices: 1}}, "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHeartbeat_RejectsInvalidToken(t *testing.T) {
+	router := newTestRouter(t)
+	registerAgent(t, router, RegisterRequest{AgentID: "agent-1", Hostname: "host-1", Version: "1.0.0"})
+
+	rec := doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-1/heartbeat", HeartbeatRequest{Status: AgentStatus{RunningServices: 1}}, "not-the-real-token")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with invalid token, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHeartbeat_RejectsTokenForOtherAgent(t *testing.T) {
+	router := newTestRouter(t)
+	regA := registerAgent(t, router, RegisterRequest{AgentID: "agent-a", Hostname: "host-a", Version: "1.0.0"})
+	registerAgent(t, router, RegisterRequest{AgentID: "agent-b", Hostname: "host-b", Version: "1.0.0"})
+
+	rec := doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-b/heartbeat", HeartbeatRequest{Status: AgentStatus{RunningServices: 1}}, regA.SessionToken)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for cross-agent token, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetAgent_RequiresAuth(t *testing.T) {
+	router := newTestRouter(t)
+	reg := registerAgent(t, router, RegisterRequest{AgentID: "agent-1", Hostname: "host-1", Version: "1.0.0"})
+
+	rec := doRequest(t, router, http.MethodGet, "/api/v1/agents/agent-1", nil, "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d", rec.Code)
+	}
+
+	rec = doRequest(t, router, http.MethodGet, "/api/v1/agents/agent-1", nil, reg.SessionToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid token, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBearerToken(t *testing.T) {
+	cases := []struct {
+		header string
+		want   string
+		ok     bool
+	}{
+		{"Bearer abc", "abc", true},
+		{"bearer abc", "abc", true},
+		{"Bearer  ", "", false},
+		{"", "", false},
+		{"Token abc", "", false},
+		{"abc", "", false},
+	}
+	for _, c := range cases {
+		got, ok := bearerToken(c.header)
+		if ok != c.ok || got != c.want {
+			t.Errorf("bearerToken(%q) = (%q, %v), want (%q, %v)", c.header, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestValidateSessionToken(t *testing.T) {
+	s := NewAgentStore()
+	a, err := s.RegisterAgent(AgentRegistration{AgentID: "agent-1", Hostname: "host-1", Version: "1.0.0"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	if err := s.ValidateSessionToken("agent-1", a.SessionToken); err != nil {
+		t.Errorf("valid token rejected: %v", err)
+	}
+	if err := s.ValidateSessionToken("agent-1", "wrong"); err != ErrInvalidToken {
+		t.Errorf("expected ErrInvalidToken, got %v", err)
+	}
+	if err := s.ValidateSessionToken("agent-1", ""); err != ErrInvalidToken {
+		t.Errorf("expected ErrInvalidToken for empty, got %v", err)
+	}
+	if err := s.ValidateSessionToken("ghost", a.SessionToken); err != ErrAgentNotFound {
+		t.Errorf("expected ErrAgentNotFound, got %v", err)
 	}
 }

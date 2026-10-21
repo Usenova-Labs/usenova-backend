@@ -44,6 +44,14 @@ func New(cfg *config.Config, log *logrus.Logger) *Agent {
 	var runtimeMgr *runtime.Manager
 	if dockerClient != nil {
 		runtimeMgr = runtime.NewManager(dockerClient, log)
+		// Restart limits: keep a crash-looping service from being restarted
+		// forever. Services may tighten or loosen this per service.
+		runtimeMgr.SetRestartPolicy(runtime.RestartPolicy{
+			MaxRestarts: cfg.RestartMaxRestarts,
+			Window:      cfg.RestartWindow,
+			Backoff:     cfg.RestartBackoff,
+			MaxBackoff:  runtime.DefaultRestartMaxBackoff,
+		})
 	}
 
 	// Feed real capability + service count into heartbeats/registration.
@@ -70,6 +78,12 @@ func New(cfg *config.Config, log *logrus.Logger) *Agent {
 			return ""
 		}
 		return version
+	})
+	controlPlaneClient.SetFailedServicesCounter(func() int {
+		if runtimeMgr == nil {
+			return 0
+		}
+		return runtimeMgr.FailedCount()
 	})
 
 	return &Agent{
@@ -270,8 +284,10 @@ func (a *Agent) GetAgentID() string {
 // GetStatus returns current agent status
 func (a *Agent) GetStatus() map[string]interface{} {
 	running := 0
+	failed := 0
 	if a.runtimeMgr != nil {
 		running = a.runtimeMgr.RunningCount()
+		failed = a.runtimeMgr.FailedCount()
 	}
 
 	dockerAvailable := false
@@ -293,5 +309,6 @@ func (a *Agent) GetStatus() map[string]interface{} {
 		"arch":             system.Arch,
 		"cpu_count":        system.CPUCount,
 		"memory_bytes":     system.MemoryBytes,
+		"failed_services":  failed,
 	}
 }

@@ -48,6 +48,9 @@ type RegisterResponse struct {
 type AgentStatus struct {
 	Uptime          time.Duration `json:"uptime"`
 	RunningServices int           `json:"running_services"`
+	// FailedServices counts services the agent gave up on (they exhausted
+	// their restart budget or their deploy failed).
+	FailedServices int `json:"failed_services,omitempty"`
 	// TODO: Add more status fields as needed
 	// MemoryUsage     int64 `json:"memory_usage"`
 	// CPUUsage        float64 `json:"cpu_usage"`

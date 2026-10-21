@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -30,6 +31,9 @@ type SystemInfoDetector func(ctx context.Context) AgentSystemInfo
 // DockerVersionDetector reports the version of the Docker engine available on
 // the host. It returns an empty string when the version is unknown.
 type DockerVersionDetector func(ctx context.Context) string
+// FailedServicesCounter reports how many services the agent gave up on
+// (they exhausted their restart budget or their deploy failed).
+type FailedServicesCounter func() int
 
 // Client handles communication with the Control Plane API
 type Client struct {
@@ -40,12 +44,21 @@ type Client struct {
 	log        *logrus.Logger
 	startTime  time.Time
 
+	// mu guards agentID and sessionToken, which are written on registration and
+	// read by concurrent heartbeat sends.
+	mu sync.RWMutex
+	// sessionToken is the token issued by the control plane at registration.
+	// While empty (before registration) requests fall back to agentToken, the
+	// static bootstrap token from configuration.
+	sessionToken string
+
 	// Injected by the agent at startup so the control plane client stays
 	// decoupled from Docker/runtime internals.
 	dockerDetector        DockerDetector
 	servicesCounter       ServicesCounter
 	systemInfoDetector    SystemInfoDetector
 	dockerVersionDetector DockerVersionDetector
+	failedServicesCounter FailedServicesCounter
 }
 
 // NewClient creates a new Control Plane API client
@@ -105,8 +118,17 @@ func (c *Client) Register(ctx context.Context, agentID, version string) (*Regist
 		return nil, fmt.Errorf("registration failed: %w", err)
 	}
 
-	// Store the agent ID returned by the control plane
+	// Store the agent ID and the session token returned by the control plane.
+	// Subsequent requests (heartbeat, status) must authenticate with the
+	// session token, not the static bootstrap token.
+	c.mu.Lock()
 	c.agentID = response.AgentID
+	if response.SessionToken != "" {
+		c.sessionToken = response.SessionToken
+	} else {
+		c.log.Warn("Control plane did not return a session token; falling back to the bootstrap token")
+	}
+	c.mu.Unlock()
 
 	c.log.WithFields(logrus.Fields{
 		"agent_id": response.AgentID,
@@ -118,13 +140,17 @@ func (c *Client) Register(ctx context.Context, agentID, version string) (*Regist
 
 // SendHeartbeat sends a heartbeat to the control plane
 func (c *Client) SendHeartbeat(ctx context.Context) error {
-	if c.agentID == "" {
+	c.mu.RLock()
+	agentID := c.agentID
+	c.mu.RUnlock()
+	if agentID == "" {
 		return fmt.Errorf("agent not registered - no agent ID available")
 	}
 
 	status := AgentStatus{
 		Uptime:          time.Since(c.startTime),
 		RunningServices: c.getRunningServicesCount(),
+		FailedServices:  c.getFailedServicesCount(),
 	}
 
 	// Refresh the machine inventory so the control plane keeps track of
@@ -137,7 +163,7 @@ func (c *Client) SendHeartbeat(ctx context.Context) error {
 	}
 
 	var response HeartbeatResponse
-	endpoint := fmt.Sprintf("/api/v1/agents/%s/heartbeat", c.agentID)
+	endpoint := fmt.Sprintf("/api/v1/agents/%s/heartbeat", agentID)
 
 	err := c.makeRequest(ctx, "POST", endpoint, request, &response)
 	if err != nil {
@@ -145,14 +171,26 @@ func (c *Client) SendHeartbeat(ctx context.Context) error {
 	}
 
 	c.log.WithFields(logrus.Fields{
-		"agent_id":       c.agentID,
-		"uptime":         status.Uptime.Round(time.Second),
-		"services":       status.RunningServices,
-		"status":         response.Status,
+		"agent_id": agentID,
+		"uptime":   status.Uptime.Round(time.Second),
+		"services": status.RunningServices,
+		"failed":   status.FailedServices,
+		"status":   response.Status,
 		"docker_version": system.DockerVersion,
 	}).Debug("Heartbeat sent successfully")
 
 	return nil
+}
+
+// authToken returns the bearer token to send: the session token once
+// registered, otherwise the static bootstrap token from configuration.
+func (c *Client) authToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.sessionToken != "" {
+		return c.sessionToken
+	}
+	return c.agentToken
 }
 
 // makeRequest is a helper function to make HTTP requests to the control plane
@@ -177,7 +215,7 @@ func (c *Client) makeRequest(ctx context.Context, method, endpoint string, reque
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.agentToken)
+	req.Header.Set("Authorization", "Bearer "+c.authToken())
 	req.Header.Set("User-Agent", fmt.Sprintf("Usenova-Agent/1.0 (%s; %s)", runtime.GOOS, runtime.GOARCH))
 
 	// Make the request
@@ -283,6 +321,12 @@ func detectSystemInfo(_ context.Context) AgentSystemInfo {
 	}
 }
 
+// SetFailedServicesCounter injects the source of truth for the count of
+// failed services reported in heartbeats.
+func (c *Client) SetFailedServicesCounter(s FailedServicesCounter) {
+	c.failedServicesCounter = s
+}
+
 // hasDocker checks if Docker is available on this system
 func (c *Client) hasDocker() bool {
 	if c.dockerDetector != nil {
@@ -309,7 +353,17 @@ func (c *Client) getRunningServicesCount() int {
 	return 0
 }
 
+// getFailedServicesCount returns the number of services this agent gave up on
+func (c *Client) getFailedServicesCount() int {
+	if c.failedServicesCounter != nil {
+		return c.failedServicesCounter()
+	}
+	return 0
+}
+
 // GetAgentID returns the current agent ID
 func (c *Client) GetAgentID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.agentID
 }

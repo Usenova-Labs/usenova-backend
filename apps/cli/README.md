@@ -21,6 +21,7 @@ Or build everything from the repo root:
 | Setting | Flag | Environment variable | Default |
 | --- | --- | --- | --- |
 | Agent API URL | `--agent-url` | `USENOVA_AGENT_URL` | `http://127.0.0.1:9090` |
+| Control plane URL | `--control-plane-url` | `USENOVA_CONTROL_PLANE_URL` | `http://127.0.0.1:8080` |
 | Bearer token | `--token` | `USENOVA_API_TOKEN` | (empty) |
 | Output format | `-o, --output` | — | `text` |
 | Request timeout | `--timeout` | — | `2m` |
@@ -49,6 +50,11 @@ nova deploy \
 `--health-path`/`--health-port` configure an agent-side health check
 (`health_check` in the service spec; the type is derived as `http` when a path
 or port is given, otherwise `tcp`).
+
+`--max-restarts`, `--restart-window` and `--restart-backoff` bound how often
+the agent restarts a failing service (defaults come from the agent
+configuration). Once the budget is used up the service is marked `failed` and
+the agent stops restarting it.
 
 Deployments can outlive `--timeout`; when that happens the CLI queries the
 service state and reports it instead of a bare timeout.
@@ -95,7 +101,25 @@ unavailable on the agent (503).
 Names must be a single URL path segment: no `/`, no control characters.
 Reserved characters such as `?` and `#` are accepted and escaped by the CLI.
 
+## Stellar accounts
+
+Link a Stellar account and query its balances through the control plane. The
+network and Horizon endpoint come from the environment
+(`STELLAR_NETWORK`, `STELLAR_HORIZON_URL`); the CLI never handles secret keys.
+
+```bash
+nova stellar link GBRP... --label payouts
+nova stellar accounts
+nova stellar balance GBRP...            # all assets
+nova stellar balance GBRP... --asset USDC
+nova stellar unlink GBRP...
+```
+
+Point the CLI at a control plane with `--control-plane-url` or
+`USENOVA_CONTROL_PLANE_URL`. See [docs/stellar-testnet.md](../../docs/stellar-testnet.md)
+for testnet setup.
+
 ## Follow-ups
 
-- [ ] Control plane commands (`nova agents list`, billing, …) are out of scope
-  for this MVP.
+- [ ] Additional control plane commands (billing, deployments, …) are out of
+  scope for this MVP.
