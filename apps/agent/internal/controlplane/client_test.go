@@ -162,6 +162,34 @@ func TestClient_SendHeartbeat(t *testing.T) {
 		}
 	})
 
+	t.Run("heartbeat reports failed services", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req HeartbeatRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("Failed to decode request: %v", err)
+			}
+			if req.Status.RunningServices != 3 {
+				t.Errorf("Expected 3 running services, got %d", req.Status.RunningServices)
+			}
+			if req.Status.FailedServices != 2 {
+				t.Errorf("Expected 2 failed services, got %d", req.Status.FailedServices)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(HeartbeatResponse{Status: "ok"})
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, "test-token", log)
+		client.agentID = "test-agent-123"
+		client.SetServicesCounter(func() int { return 3 })
+		client.SetFailedServicesCounter(func() int { return 2 })
+
+		if err := client.SendHeartbeat(context.Background()); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	})
+
 	t.Run("heartbeat without registration", func(t *testing.T) {
 		client := NewClient("http://localhost:0", "test-token", log)
 		// Don't set agentID - simulate unregistered agent

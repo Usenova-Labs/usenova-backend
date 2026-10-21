@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,13 +23,16 @@ func testLogger() *logrus.Logger {
 	return log
 }
 
-// fakeRuntime implements ContainerRuntime for unit tests.
+// fakeRuntime implements ContainerRuntime for unit tests. It is safe for
+// concurrent use: deferred restarts run on their own goroutine.
 type fakeRuntime struct {
+	mu        sync.Mutex
 	available bool
 
 	pulled     []string
 	runConfigs []docker.ContainerConfig
 	restarted  []string
+	started    []string
 	stopped    []string
 	removed    []string
 
@@ -47,11 +51,15 @@ func newFakeRuntime() *fakeRuntime {
 func (f *fakeRuntime) IsAvailable(ctx context.Context) bool { return f.available }
 
 func (f *fakeRuntime) PullImage(ctx context.Context, image string, authConfig *types.AuthConfig) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.pulled = append(f.pulled, image)
 	return nil
 }
 
 func (f *fakeRuntime) RunContainer(ctx context.Context, cfg docker.ContainerConfig) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.runConfigs = append(f.runConfigs, cfg)
 	f.nextID++
 	id := "container-" + string(rune('0'+f.nextID))
@@ -65,24 +73,37 @@ func (f *fakeRuntime) RunContainer(ctx context.Context, cfg docker.ContainerConf
 	return id, nil
 }
 
-func (f *fakeRuntime) StartContainer(ctx context.Context, containerID string) error { return nil }
+func (f *fakeRuntime) StartContainer(ctx context.Context, containerID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.started = append(f.started, containerID)
+	return nil
+}
 
 func (f *fakeRuntime) StopContainer(ctx context.Context, containerID string, timeout time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, containerID)
 	return nil
 }
 
 func (f *fakeRuntime) RestartContainer(ctx context.Context, containerID string, timeout time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.restarted = append(f.restarted, containerID)
 	return nil
 }
 
 func (f *fakeRuntime) RemoveContainer(ctx context.Context, containerID string, force bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.removed = append(f.removed, containerID)
 	return nil
 }
 
 func (f *fakeRuntime) InspectContainer(ctx context.Context, containerID string) (*types.ContainerJSON, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	info, ok := f.inspect[containerID]
 	if !ok {
 		return nil, errNotFound
@@ -94,6 +115,38 @@ func (f *fakeRuntime) ListContainers(ctx context.Context, all bool, filter filte
 	return nil, nil
 }
 
+// restartCount returns how many containers were restarted. It locks because
+// deferred restarts run on their own goroutine.
+func (f *fakeRuntime) restartCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.restarted)
+}
+
+// startCount returns how many containers were started.
+func (f *fakeRuntime) startCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.started)
+}
+
+// setRunning flips the recorded state of a container so tests can simulate a
+// container that exited.
+func (f *fakeRuntime) setRunning(containerID string, running bool, exitCode int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	info, ok := f.inspect[containerID]
+	if !ok {
+		return
+	}
+	if info.State == nil {
+		info.State = &types.ContainerState{}
+	}
+	info.State.Running = running
+	info.State.ExitCode = exitCode
+	f.inspect[containerID] = info
+}
+
 // logOpts records the options passed to GetContainerLogs, and logsErr/logsBody
 // let tests simulate daemon errors and canned output.
 type logCall struct {
@@ -102,6 +155,8 @@ type logCall struct {
 }
 
 func (f *fakeRuntime) GetContainerLogs(ctx context.Context, containerID string, opts docker.LogOptions) (io.ReadCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.logCalls = append(f.logCalls, logCall{containerID: containerID, opts: opts})
 	if f.logsErr != nil {
 		return nil, f.logsErr
@@ -407,5 +462,264 @@ func TestShouldRestart(t *testing.T) {
 		if got := shouldRestart(policy); got != want {
 			t.Errorf("shouldRestart(%q) = %v, want %v", policy, got, want)
 		}
+	}
+}
+
+func TestManager_RestartLimitFailsService(t *testing.T) {
+	fake := newFakeRuntime()
+	m := NewManager(fake, testLogger())
+	m.SetRestartPolicy(RestartPolicy{MaxRestarts: 2, Window: time.Minute})
+
+	spec := docker.ServiceSpec{
+		Name:          "worker",
+		Image:         "worker:1",
+		RestartPolicy: RestartPolicyOnFailure,
+	}
+	if _, err := m.DeployService(context.Background(), spec); err != nil {
+		t.Fatalf("deploy failed: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+			t.Fatalf("onUnhealthy failed: %v", err)
+		}
+	}
+	if got := fake.restartCount(); got != 2 {
+		t.Fatalf("expected 2 restarts, got %d", got)
+	}
+
+	// The third attempt exceeds the limit: no restart, the service fails.
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+	if got := fake.restartCount(); got != 2 {
+		t.Errorf("expected no restart past the limit, got %d", got)
+	}
+
+	svc, ok := m.GetService("worker")
+	if !ok {
+		t.Fatal("expected the service to still be managed")
+	}
+	if svc.State != ServiceStateFailed {
+		t.Errorf("expected failed state, got %s", svc.State)
+	}
+	if svc.LastError == nil {
+		t.Error("expected the failure to be explained in LastError")
+	}
+	if svc.RestartAttempts != 2 {
+		t.Errorf("expected 2 recorded attempts, got %d", svc.RestartAttempts)
+	}
+	if svc.LastRestartAt.IsZero() {
+		t.Error("expected the last restart time to be recorded")
+	}
+	if svc.RestartCount != 2 {
+		t.Errorf("expected 2 successful restarts, got %d", svc.RestartCount)
+	}
+	if got := m.FailedCount(); got != 1 {
+		t.Errorf("expected 1 failed service, got %d", got)
+	}
+
+	// A service that ran out of budget stays down: further unhealthy signals
+	// must not restart it again.
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+	if got := fake.restartCount(); got != 2 {
+		t.Errorf("expected no further restarts, got %d", got)
+	}
+}
+
+func TestManager_RestartLimitAppliesPerService(t *testing.T) {
+	fake := newFakeRuntime()
+	m := NewManager(fake, testLogger())
+	m.SetRestartPolicy(RestartPolicy{MaxRestarts: 5, Window: time.Minute})
+
+	// The service overrides the agent-wide limit.
+	spec := docker.ServiceSpec{
+		Name:          "worker",
+		Image:         "worker:1",
+		RestartPolicy: RestartPolicyOnFailure,
+		MaxRestarts:   1,
+	}
+	if _, err := m.DeployService(context.Background(), spec); err != nil {
+		t.Fatalf("deploy failed: %v", err)
+	}
+
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+	if got := fake.restartCount(); got != 1 {
+		t.Errorf("expected 1 restart, got %d", got)
+	}
+
+	svc, _ := m.GetService("worker")
+	if svc.State != ServiceStateFailed {
+		t.Errorf("expected failed state, got %s", svc.State)
+	}
+}
+
+func TestManager_RestartBackoffDefersRestart(t *testing.T) {
+	fake := newFakeRuntime()
+	m := NewManager(fake, testLogger())
+	m.SetRestartPolicy(RestartPolicy{MaxRestarts: 5, Window: time.Minute, Backoff: 100 * time.Millisecond})
+
+	spec := docker.ServiceSpec{
+		Name:          "worker",
+		Image:         "worker:1",
+		RestartPolicy: RestartPolicyOnFailure,
+	}
+	if _, err := m.DeployService(context.Background(), spec); err != nil {
+		t.Fatalf("deploy failed: %v", err)
+	}
+
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+	if got := fake.restartCount(); got != 1 {
+		t.Fatalf("expected 1 restart, got %d", got)
+	}
+
+	// The next attempt is inside the backoff window: it must not run yet.
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+	if got := fake.restartCount(); got != 1 {
+		t.Fatalf("expected the restart to be deferred, got %d restarts", got)
+	}
+
+	// Once the backoff elapsed the deferred restart runs.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if fake.restartCount() >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := fake.restartCount(); got != 2 {
+		t.Errorf("expected the deferred restart to run, got %d restarts", got)
+	}
+}
+
+func TestManager_ReconcileRestartLimitFailsService(t *testing.T) {
+	fake := newFakeRuntime()
+	m := NewManager(fake, testLogger())
+	m.SetRestartPolicy(RestartPolicy{MaxRestarts: 2, Window: time.Minute})
+
+	spec := docker.ServiceSpec{
+		Name:          "worker",
+		Image:         "worker:1",
+		RestartPolicy: RestartPolicyOnFailure,
+	}
+	svc, err := m.DeployService(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("deploy failed: %v", err)
+	}
+
+	// The container keeps crashing: every reconcile cycle tries to start it
+	// again until the restart budget is exhausted.
+	for i := 0; i < 2; i++ {
+		fake.setRunning(svc.ContainerID, false, 1)
+		m.reconcile(context.Background())
+	}
+	if got := fake.startCount(); got != 2 {
+		t.Fatalf("expected 2 container starts, got %d", got)
+	}
+
+	fake.setRunning(svc.ContainerID, false, 1)
+	m.reconcile(context.Background())
+	if got := fake.startCount(); got != 2 {
+		t.Errorf("expected no start past the restart limit, got %d", got)
+	}
+
+	svc, _ = m.GetService("worker")
+	if svc.State != ServiceStateFailed {
+		t.Errorf("expected failed state, got %s", svc.State)
+	}
+	if got := m.FailedCount(); got != 1 {
+		t.Errorf("expected 1 failed service, got %d", got)
+	}
+}
+
+func TestManager_DeployResetsRestartBudget(t *testing.T) {
+	fake := newFakeRuntime()
+	m := NewManager(fake, testLogger())
+	m.SetRestartPolicy(RestartPolicy{MaxRestarts: 1, Window: time.Minute})
+
+	spec := docker.ServiceSpec{
+		Name:          "worker",
+		Image:         "worker:1",
+		RestartPolicy: RestartPolicyOnFailure,
+	}
+	if _, err := m.DeployService(context.Background(), spec); err != nil {
+		t.Fatalf("deploy failed: %v", err)
+	}
+
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+	if got := fake.restartCount(); got != 1 {
+		t.Fatalf("expected 1 restart, got %d", got)
+	}
+
+	svc, _ := m.GetService("worker")
+	if svc.State != ServiceStateFailed {
+		t.Fatalf("expected failed state, got %s", svc.State)
+	}
+
+	// Redeploying the service gives it a fresh restart budget.
+	if _, err := m.DeployService(context.Background(), spec); err != nil {
+		t.Fatalf("redeploy failed: %v", err)
+	}
+	svc, _ = m.GetService("worker")
+	if svc.RestartAttempts != 0 {
+		t.Errorf("expected a fresh restart budget, got %d attempts", svc.RestartAttempts)
+	}
+	if svc.State != ServiceStateRunning {
+		t.Errorf("expected running state, got %s", svc.State)
+	}
+}
+
+func TestManager_ExhaustedServiceStaysFailed(t *testing.T) {
+	fake := newFakeRuntime()
+	m := NewManager(fake, testLogger())
+	m.SetRestartPolicy(RestartPolicy{MaxRestarts: 1, Window: time.Minute})
+
+	spec := docker.ServiceSpec{
+		Name:          "worker",
+		Image:         "worker:1",
+		RestartPolicy: RestartPolicyOnFailure,
+	}
+	if _, err := m.DeployService(context.Background(), spec); err != nil {
+		t.Fatalf("deploy failed: %v", err)
+	}
+
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+	if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+		t.Fatalf("onUnhealthy failed: %v", err)
+	}
+
+	svc, _ := m.GetService("worker")
+	if svc.State != ServiceStateFailed {
+		t.Fatalf("expected failed state, got %s", svc.State)
+	}
+
+	// The reconcile loop must not resurrect a service that used up its
+	// restart budget.
+	m.reconcile(context.Background())
+
+	svc, _ = m.GetService("worker")
+	if svc.State != ServiceStateFailed {
+		t.Errorf("expected the service to stay failed, got %s", svc.State)
+	}
+	if got := m.FailedCount(); got != 1 {
+		t.Errorf("expected 1 failed service, got %d", got)
 	}
 }

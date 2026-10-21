@@ -60,6 +60,13 @@ type Service struct {
 	// RestartCount counts agent-initiated restarts (health or crash)
 	RestartCount int
 
+	// RestartAttempts counts restart attempts inside the current restart
+	// window. It is what the restart breaker compares against its limit.
+	RestartAttempts int
+
+	// LastRestartAt is when the last restart attempt was made
+	LastRestartAt time.Time
+
 	// LastError holds the last error observed for this service, if any
 	LastError error
 
@@ -70,6 +77,15 @@ type Service struct {
 
 	// cancel cancels the in-flight deploy for this incarnation, if any.
 	cancel context.CancelFunc
+
+	// restart is the circuit breaker that bounds how often this service may
+	// be restarted. It is nil only for services that were never deployed.
+	restart *restartBreaker
+
+	// restartExhausted marks a service that used up its restart budget. The
+	// reconcile loop leaves it alone: it stays failed until it is deployed
+	// again.
+	restartExhausted bool
 }
 
 // ShortID returns a shortened container ID for logging

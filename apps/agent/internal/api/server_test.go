@@ -39,6 +39,7 @@ func (f *fakeManager) RemoveService(context.Context, string) error { return nil 
 func (f *fakeManager) ListServices() []*runtime.Service            { return nil }
 func (f *fakeManager) GetService(string) (*runtime.Service, bool)  { return nil, false }
 func (f *fakeManager) RunningCount() int                           { return 0 }
+func (f *fakeManager) FailedCount() int                            { return 0 }
 
 func (f *fakeManager) ServiceLogs(_ context.Context, name string, opts docker.LogOptions) (io.ReadCloser, error) {
 	f.logCalls++
