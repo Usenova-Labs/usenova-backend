@@ -18,12 +18,28 @@ type AgentCapabilities struct {
 	// Systemd    bool `json:"systemd"`
 }
 
+// AgentSystemInfo describes the machine an agent runs on.
+//
+// The inventory is best-effort: agents that do not report it (older agents,
+// or hosts where the details cannot be determined) leave the fields empty.
+type AgentSystemInfo struct {
+	OS          string `json:"os,omitempty"`
+	Arch        string `json:"arch,omitempty"`
+	CPUCount    int    `json:"cpu_count,omitempty"`
+	MemoryBytes int64  `json:"memory_bytes,omitempty"`
+	// DockerVersion is the version of the Docker engine available on the
+	// agent host. It is empty when Docker is unavailable or its version is
+	// unknown.
+	DockerVersion string `json:"docker_version,omitempty"`
+}
+
 // Agent represents a registered agent in the system
 type Agent struct {
 	AgentID          string            `json:"agent_id"`
 	Hostname         string            `json:"hostname"`
 	Version          string            `json:"version"`
 	Capabilities     AgentCapabilities `json:"capabilities"`
+	System           AgentSystemInfo   `json:"system"`
 	LastHeartbeat    time.Time         `json:"last_heartbeat"`
 	RegistrationTime time.Time         `json:"registration_time"`
 	Status           AgentStatus       `json:"status,omitempty"`
@@ -52,14 +68,28 @@ func NewAgentStore() *AgentStore {
 	}
 }
 
+// AgentRegistration carries the data an agent reports when it registers.
+type AgentRegistration struct {
+	// AgentID is optional: the control plane generates one when it is empty.
+	AgentID  string
+	Hostname string
+	Version  string
+	// Capabilities describes what the agent is able to do.
+	Capabilities AgentCapabilities
+	// System describes the machine the agent runs on. It is empty for
+	// agents that do not report an inventory.
+	System AgentSystemInfo
+}
+
 // RegisterAgent registers or updates an agent
-func (s *AgentStore) RegisterAgent(agentID, hostname, version string, capabilities AgentCapabilities) (*Agent, error) {
+func (s *AgentStore) RegisterAgent(reg AgentRegistration) (*Agent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
 
 	// Generate agent ID if not provided.
+	agentID := reg.AgentID
 	if agentID == "" {
 		agentID = uuid.NewString()
 	}
@@ -74,9 +104,10 @@ func (s *AgentStore) RegisterAgent(agentID, hostname, version string, capabiliti
 
 	agent := &Agent{
 		AgentID:          agentID,
-		Hostname:         hostname,
-		Version:          version,
-		Capabilities:     capabilities,
+		Hostname:         reg.Hostname,
+		Version:          reg.Version,
+		Capabilities:     reg.Capabilities,
+		System:           reg.System,
 		RegistrationTime: now,
 		LastHeartbeat:    now,
 		SessionToken:     sessionToken,
@@ -107,6 +138,23 @@ func (s *AgentStore) UpdateHeartbeat(agentID string, status AgentStatus) error {
 
 	agent.LastHeartbeat = time.Now()
 	agent.Status = status
+	return nil
+}
+
+// UpdateSystemInfo refreshes the machine inventory recorded for an agent.
+//
+// Agents report their inventory on every heartbeat, so dynamic values (CPU
+// count, Docker version, ...) stay current without re-registering.
+func (s *AgentStore) UpdateSystemInfo(agentID string, system AgentSystemInfo) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	agent, exists := s.agents[agentID]
+	if !exists {
+		return ErrAgentNotFound
+	}
+
+	agent.System = system
 	return nil
 }
 

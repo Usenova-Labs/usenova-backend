@@ -48,15 +48,43 @@ func (h *Handler) RegisterAgent(c *gin.Context) {
 		return
 	}
 
+	// The machine inventory is optional, but the values it carries must be
+	// sensible when it is reported.
+	if req.System != nil {
+		if req.System.CPUCount < 0 {
+			c.JSON(http.StatusBadRequest, ErrorResponse{
+				Error: "CPU count must not be negative",
+			})
+			return
+		}
+		if req.System.MemoryBytes < 0 {
+			c.JSON(http.StatusBadRequest, ErrorResponse{
+				Error: "Memory size must not be negative",
+			})
+			return
+		}
+	}
+
 	h.logger.WithFields(logrus.Fields{
 		"agent_id":     req.AgentID,
 		"hostname":     req.Hostname,
 		"version":      req.Version,
 		"capabilities": req.Capabilities,
+		"system":       req.System,
 	}).Info("Registering agent")
 
 	// Register agent in store
-	agent, err := h.store.RegisterAgent(req.AgentID, req.Hostname, req.Version, req.Capabilities)
+	registration := AgentRegistration{
+		AgentID:      req.AgentID,
+		Hostname:     req.Hostname,
+		Version:      req.Version,
+		Capabilities: req.Capabilities,
+	}
+	if req.System != nil {
+		registration.System = *req.System
+	}
+
+	agent, err := h.store.RegisterAgent(registration)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to register agent")
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
@@ -112,6 +140,26 @@ func (h *Handler) HandleHeartbeat(c *gin.Context) {
 			Error: "Failed to update heartbeat",
 		})
 		return
+	}
+
+	// Refresh the machine inventory when the agent reports one, so dynamic
+	// values stay current without re-registering.
+	if req.System != nil {
+		if err := h.store.UpdateSystemInfo(agentID, *req.System); err != nil {
+			if err == ErrAgentNotFound {
+				h.logger.WithField("agent_id", agentID).Warn("Agent not found for heartbeat")
+				c.JSON(http.StatusNotFound, ErrorResponse{
+					Error: "Agent not found",
+				})
+				return
+			}
+
+			h.logger.WithError(err).Error("Failed to update agent inventory")
+			c.JSON(http.StatusInternalServerError, ErrorResponse{
+				Error: "Failed to update heartbeat",
+			})
+			return
+		}
 	}
 
 	resp := HeartbeatResponse{

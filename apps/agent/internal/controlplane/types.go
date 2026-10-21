@@ -10,12 +10,31 @@ type AgentCapabilities struct {
 	// Systemd    bool `json:"systemd"`
 }
 
+// AgentSystemInfo describes the machine this agent runs on.
+//
+// It mirrors the control plane's AgentSystemInfo: both sides must agree on
+// the wire format.
+type AgentSystemInfo struct {
+	OS          string `json:"os,omitempty"`
+	Arch        string `json:"arch,omitempty"`
+	CPUCount    int    `json:"cpu_count,omitempty"`
+	MemoryBytes int64  `json:"memory_bytes,omitempty"`
+	// DockerVersion is the version of the Docker engine available on this
+	// host. It is empty when Docker is unavailable or its version is
+	// unknown.
+	DockerVersion string `json:"docker_version,omitempty"`
+}
+
 // RegisterRequest is sent to register this agent with the control plane
 type RegisterRequest struct {
 	AgentID      string            `json:"agent_id,omitempty"`
 	Hostname     string            `json:"hostname"`
 	Version      string            `json:"version"`
 	Capabilities AgentCapabilities `json:"capabilities"`
+	// System is the machine inventory of this agent. It is optional so
+	// agents that do not report it yet stay compatible with the control
+	// plane.
+	System *AgentSystemInfo `json:"system,omitempty"`
 }
 
 // RegisterResponse is received after successful registration
@@ -37,6 +56,10 @@ type AgentStatus struct {
 // HeartbeatRequest is sent periodically to maintain agent session
 type HeartbeatRequest struct {
 	Status AgentStatus `json:"status"`
+	// System refreshes the machine inventory recorded at registration time.
+	// It is optional: agents that do not report it keep the inventory the
+	// control plane already holds.
+	System *AgentSystemInfo `json:"system,omitempty"`
 }
 
 // HeartbeatResponse is received after heartbeat

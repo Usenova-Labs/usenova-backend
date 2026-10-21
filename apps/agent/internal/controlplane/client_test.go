@@ -45,6 +45,20 @@ func TestClient_Register(t *testing.T) {
 					t.Error("Expected version in request")
 				}
 
+				// The machine inventory must be reported
+				if req.System == nil {
+					t.Fatal("Expected system info in request")
+				}
+				if req.System.OS == "" {
+					t.Error("Expected OS in system info")
+				}
+				if req.System.Arch == "" {
+					t.Error("Expected arch in system info")
+				}
+				if req.System.CPUCount <= 0 {
+					t.Error("Expected a positive CPU count in system info")
+				}
+
 				// Send success response
 				w.Header().Set("Content-Type", "application/json")
 				response := RegisterResponse{
@@ -104,6 +118,38 @@ func TestClient_Register(t *testing.T) {
 	}
 }
 
+func TestClient_Register_ReportsDockerVersion(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req RegisterRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("Failed to decode request: %v", err)
+		}
+
+		if req.System == nil {
+			t.Fatal("Expected system info in request")
+		}
+		if req.System.DockerVersion != "24.0.7" {
+			t.Errorf("Expected Docker version 24.0.7, got %q", req.System.DockerVersion)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(RegisterResponse{AgentID: "agent-12345"})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token", log)
+	client.SetDockerVersionDetector(func(ctx context.Context) string {
+		return "24.0.7"
+	})
+
+	if _, err := client.Register(context.Background(), "test-agent-id", "test-version"); err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
 func TestClient_SendHeartbeat(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -138,6 +184,14 @@ func TestClient_SendHeartbeat(t *testing.T) {
 			}
 			if req.Status.RunningServices < 0 {
 				t.Error("Expected non-negative running services count")
+			}
+
+			// The heartbeat refreshes the machine inventory
+			if req.System == nil {
+				t.Fatal("Expected system info in request")
+			}
+			if req.System.OS == "" {
+				t.Error("Expected OS in system info")
 			}
 
 			// Send success response
