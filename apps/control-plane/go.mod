@@ -3,10 +3,13 @@ module github.com/byoi-platform/control-plane
 go 1.21
 
 require (
+	github.com/byoi-platform/stellar v0.0.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/google/uuid v1.6.0
 	github.com/sirupsen/logrus v1.9.3
 )
+
+replace github.com/byoi-platform/stellar => ../../packages/stellar
 
 require (
 	github.com/bytedance/sonic v1.9.1 // indirect

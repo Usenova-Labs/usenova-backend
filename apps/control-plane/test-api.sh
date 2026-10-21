@@ -52,6 +52,19 @@ echo "🔎 Testing get agent endpoint..."
 curl -f -s http://localhost:8080/api/v1/agents/test-agent-123 | jq .
 
 echo ""
+echo "🌐 Testing Stellar account link..."
+curl -f -s -X POST http://localhost:8080/api/v1/stellar/accounts \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+    "label": "smoke-test"
+  }' | jq .
+
+echo ""
+echo "🌐 Testing Stellar account list..."
+curl -f -s http://localhost:8080/api/v1/stellar/accounts | jq .
+
+echo ""
 echo "🧹 Cleaning up..."
 kill $CONTROL_PLANE_PID
 rm -f control-plane-test
