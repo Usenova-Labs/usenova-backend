@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -29,6 +30,14 @@ type Client struct {
 	httpClient *http.Client
 	log        *logrus.Logger
 	startTime  time.Time
+
+	// mu guards agentID and sessionToken, which are written on registration and
+	// read by concurrent heartbeat sends.
+	mu sync.RWMutex
+	// sessionToken is the token issued by the control plane at registration.
+	// While empty (before registration) requests fall back to agentToken, the
+	// static bootstrap token from configuration.
+	sessionToken string
 
 	// Injected by the agent at startup so the control plane client stays
 	// decoupled from Docker/runtime internals.
@@ -82,8 +91,17 @@ func (c *Client) Register(ctx context.Context, agentID, version string) (*Regist
 		return nil, fmt.Errorf("registration failed: %w", err)
 	}
 
-	// Store the agent ID returned by the control plane
+	// Store the agent ID and the session token returned by the control plane.
+	// Subsequent requests (heartbeat, status) must authenticate with the
+	// session token, not the static bootstrap token.
+	c.mu.Lock()
 	c.agentID = response.AgentID
+	if response.SessionToken != "" {
+		c.sessionToken = response.SessionToken
+	} else {
+		c.log.Warn("Control plane did not return a session token; falling back to the bootstrap token")
+	}
+	c.mu.Unlock()
 
 	c.log.WithFields(logrus.Fields{
 		"agent_id": response.AgentID,
@@ -95,7 +113,10 @@ func (c *Client) Register(ctx context.Context, agentID, version string) (*Regist
 
 // SendHeartbeat sends a heartbeat to the control plane
 func (c *Client) SendHeartbeat(ctx context.Context) error {
-	if c.agentID == "" {
+	c.mu.RLock()
+	agentID := c.agentID
+	c.mu.RUnlock()
+	if agentID == "" {
 		return fmt.Errorf("agent not registered - no agent ID available")
 	}
 
@@ -109,7 +130,7 @@ func (c *Client) SendHeartbeat(ctx context.Context) error {
 	}
 
 	var response HeartbeatResponse
-	endpoint := fmt.Sprintf("/api/v1/agents/%s/heartbeat", c.agentID)
+	endpoint := fmt.Sprintf("/api/v1/agents/%s/heartbeat", agentID)
 
 	err := c.makeRequest(ctx, "POST", endpoint, request, &response)
 	if err != nil {
@@ -117,11 +138,61 @@ func (c *Client) SendHeartbeat(ctx context.Context) error {
 	}
 
 	c.log.WithFields(logrus.Fields{
-		"agent_id": c.agentID,
+		"agent_id": agentID,
 		"uptime":   status.Uptime.Round(time.Second),
 		"services": status.RunningServices,
 		"status":   response.Status,
 	}).Debug("Heartbeat sent successfully")
+
+	return nil
+}
+
+// authToken returns the bearer token to send: the session token once
+// registered, otherwise the static bootstrap token from configuration.
+func (c *Client) authToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.sessionToken != "" {
+		return c.sessionToken
+	}
+	return c.agentToken
+}
+
+// FetchCommand asks the control plane for the next command queued for this
+// agent. It returns (nil, nil) when no command is pending.
+func (c *Client) FetchCommand(ctx context.Context) (*Command, error) {
+	c.mu.RLock()
+	agentID := c.agentID
+	c.mu.RUnlock()
+	if agentID == "" {
+		return nil, fmt.Errorf("agent not registered - no agent ID available")
+	}
+
+	endpoint := fmt.Sprintf("/api/v1/agents/%s/commands/next", agentID)
+
+	// The control plane answers with an empty body when nothing is pending,
+	// which leaves the command pointer nil.
+	var command *Command
+	if err := c.makeRequest(ctx, "GET", endpoint, nil, &command); err != nil {
+		return nil, fmt.Errorf("failed to fetch command: %w", err)
+	}
+
+	return command, nil
+}
+
+// ReportCommandResult reports the outcome of a command this agent executed.
+func (c *Client) ReportCommandResult(ctx context.Context, result CommandResult) error {
+	c.mu.RLock()
+	agentID := c.agentID
+	c.mu.RUnlock()
+	if agentID == "" {
+		return fmt.Errorf("agent not registered - no agent ID available")
+	}
+
+	endpoint := fmt.Sprintf("/api/v1/agents/%s/commands/%s/result", agentID, result.CommandID)
+	if err := c.makeRequest(ctx, "POST", endpoint, result, nil); err != nil {
+		return fmt.Errorf("failed to report command result: %w", err)
+	}
 
 	return nil
 }
@@ -148,7 +219,7 @@ func (c *Client) makeRequest(ctx context.Context, method, endpoint string, reque
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.agentToken)
+	req.Header.Set("Authorization", "Bearer "+c.authToken())
 	req.Header.Set("User-Agent", fmt.Sprintf("Usenova-Agent/1.0 (%s; %s)", runtime.GOOS, runtime.GOARCH))
 
 	// Make the request
@@ -174,7 +245,7 @@ func (c *Client) makeRequest(ctx context.Context, method, endpoint string, reque
 	}
 
 	// Unmarshal successful response
-	if response != nil {
+	if response != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, response); err != nil {
 			return fmt.Errorf("failed to unmarshal response: %w", err)
 		}
@@ -223,5 +294,7 @@ func (c *Client) getRunningServicesCount() int {
 
 // GetAgentID returns the current agent ID
 func (c *Client) GetAgentID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.agentID
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/byoi-platform/agent/internal/api"
+	"github.com/byoi-platform/agent/internal/command"
 	"github.com/byoi-platform/agent/internal/config"
 	"github.com/byoi-platform/agent/internal/controlplane"
 	"github.com/byoi-platform/agent/internal/docker"
@@ -22,9 +23,12 @@ type Agent struct {
 	dockerClient   *docker.Client
 	runtimeMgr     *runtime.Manager
 	apiSrv         *api.Server
+	commandRunner  *command.Runner
 	log            *logrus.Logger
 	heartbeatStop  chan struct{}
 	heartbeatDone  sync.WaitGroup
+	commandCancel  context.CancelFunc
+	commandDone    sync.WaitGroup
 	registrationID string
 }
 
@@ -107,7 +111,11 @@ func (a *Agent) Start(ctx context.Context) error {
 	// Start heartbeat loop
 	a.startHeartbeat(ctx)
 
-	// TODO: Metrics collection, control-plane deploy command channel
+	// Start the control-plane command channel. The agent polls the control
+	// plane for commands; the control plane never connects to the agent.
+	a.startCommandChannel(ctx)
+
+	// TODO: Metrics collection
 
 	a.log.Info("Usenova Agent started successfully")
 	return nil
@@ -119,6 +127,12 @@ func (a *Agent) Stop(ctx context.Context) error {
 
 	// Stop heartbeat
 	close(a.heartbeatStop)
+
+	// Stop the command channel.
+	if a.commandCancel != nil {
+		a.commandCancel()
+	}
+	a.commandDone.Wait()
 
 	// Wait for heartbeat goroutine to finish with timeout
 	done := make(chan struct{})
@@ -246,6 +260,29 @@ func (a *Agent) startHeartbeat(parentCtx context.Context) {
 				return
 			}
 		}
+	}()
+}
+
+// startCommandChannel starts the background loop that polls the control plane
+// for commands and executes them against the runtime manager.
+//
+// The control plane never connects to the agent, so the agent's local API
+// stays loopback-only and is not used here.
+func (a *Agent) startCommandChannel(parentCtx context.Context) {
+	if a.runtimeMgr == nil {
+		a.log.Warn("Runtime manager not available (no Docker client); command channel disabled")
+		return
+	}
+
+	a.commandRunner = command.NewRunner(a.controlPlane, a.runtimeMgr, a.config.CommandPollInterval, a.log)
+
+	ctx, cancel := context.WithCancel(parentCtx)
+	a.commandCancel = cancel
+
+	a.commandDone.Add(1)
+	go func() {
+		defer a.commandDone.Done()
+		a.commandRunner.Run(ctx)
 	}()
 }
 

@@ -17,6 +17,10 @@ type Config struct {
 	HeartbeatInterval time.Duration
 	Version           string
 
+	// CommandPollInterval is how often the agent asks the control plane for
+	// pending commands.
+	CommandPollInterval time.Duration
+
 	// Local control API (optional, disabled unless API_ADDR is set).
 	APIAddr  string
 	APIToken string
@@ -81,6 +85,26 @@ func Load(version string) (*Config, error) {
 	}
 	if config.HeartbeatInterval > 10*time.Minute {
 		return nil, fmt.Errorf("HEARTBEAT_INTERVAL must not exceed 10 minutes")
+	}
+
+	// Optional: command poll interval (default: 10s)
+	commandStr := os.Getenv("COMMAND_POLL_INTERVAL")
+	if commandStr == "" {
+		config.CommandPollInterval = 10 * time.Second
+	} else {
+		if interval, err := time.ParseDuration(commandStr); err == nil {
+			config.CommandPollInterval = interval
+		} else {
+			seconds, err := strconv.Atoi(commandStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid COMMAND_POLL_INTERVAL format: %s (use duration like '10s' or seconds as integer)", commandStr)
+			}
+			config.CommandPollInterval = time.Duration(seconds) * time.Second
+		}
+	}
+
+	if config.CommandPollInterval < time.Second {
+		return nil, fmt.Errorf("COMMAND_POLL_INTERVAL must be at least 1 second")
 	}
 
 	return config, nil

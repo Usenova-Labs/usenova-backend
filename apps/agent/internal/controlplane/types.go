@@ -1,6 +1,9 @@
 package controlplane
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // AgentCapabilities represents what this agent can do
 type AgentCapabilities struct {
@@ -50,4 +53,41 @@ type ErrorResponse struct {
 	Error   string `json:"error"`
 	Message string `json:"message,omitempty"`
 	Code    int    `json:"code,omitempty"`
+}
+
+// Command types the control plane can send to an agent.
+const (
+	// CommandTypeDeploy asks the agent to deploy a service.
+	CommandTypeDeploy = "deploy"
+	// CommandTypeStop asks the agent to stop a running service.
+	CommandTypeStop = "stop"
+	// CommandTypeRemove asks the agent to remove a service.
+	CommandTypeRemove = "remove"
+)
+
+// Command result statuses.
+const (
+	// CommandStatusSucceeded means the command was executed successfully.
+	CommandStatusSucceeded = "succeeded"
+	// CommandStatusFailed means the command could not be executed.
+	CommandStatusFailed = "failed"
+)
+
+// Command is a unit of work issued by the control plane. The payload is
+// command-type specific and owned by the agent.
+type Command struct {
+	ID        string          `json:"id"`
+	Type      string          `json:"type"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	ExpiresAt *time.Time      `json:"expires_at,omitempty"`
+}
+
+// CommandResult is the outcome of a command executed by the agent.
+type CommandResult struct {
+	CommandID   string    `json:"command_id"`
+	Status      string    `json:"status"`
+	Message     string    `json:"message,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
 }

@@ -13,6 +13,7 @@ func TestLoad(t *testing.T) {
 		os.Unsetenv("AGENT_TOKEN")
 		os.Unsetenv("AGENT_ID")
 		os.Unsetenv("HEARTBEAT_INTERVAL")
+		os.Unsetenv("COMMAND_POLL_INTERVAL")
 	}()
 
 	t.Run("missing required config", func(t *testing.T) {
@@ -117,6 +118,60 @@ func TestLoad(t *testing.T) {
 		_, err = Load("test-version")
 		if err == nil {
 			t.Error("Expected error for heartbeat interval too long")
+		}
+	})
+
+	t.Run("default command poll interval", func(t *testing.T) {
+		os.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+		os.Setenv("AGENT_TOKEN", "test-token")
+		os.Unsetenv("HEARTBEAT_INTERVAL")
+		os.Unsetenv("COMMAND_POLL_INTERVAL")
+
+		cfg, err := Load("test-version")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if cfg.CommandPollInterval != 10*time.Second {
+			t.Errorf("Expected default CommandPollInterval to be 10s, got %v", cfg.CommandPollInterval)
+		}
+	})
+
+	t.Run("custom command poll interval", func(t *testing.T) {
+		os.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+		os.Setenv("AGENT_TOKEN", "test-token")
+		os.Unsetenv("HEARTBEAT_INTERVAL")
+		os.Setenv("COMMAND_POLL_INTERVAL", "2s")
+
+		cfg, err := Load("test-version")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if cfg.CommandPollInterval != 2*time.Second {
+			t.Errorf("Expected CommandPollInterval to be 2s, got %v", cfg.CommandPollInterval)
+		}
+	})
+
+	t.Run("invalid command poll interval", func(t *testing.T) {
+		os.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+		os.Setenv("AGENT_TOKEN", "test-token")
+		os.Unsetenv("HEARTBEAT_INTERVAL")
+		os.Setenv("COMMAND_POLL_INTERVAL", "not-a-duration")
+
+		if _, err := Load("test-version"); err == nil {
+			t.Error("Expected error for invalid COMMAND_POLL_INTERVAL")
+		}
+	})
+
+	t.Run("command poll interval too short", func(t *testing.T) {
+		os.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+		os.Setenv("AGENT_TOKEN", "test-token")
+		os.Unsetenv("HEARTBEAT_INTERVAL")
+		os.Setenv("COMMAND_POLL_INTERVAL", "100ms")
+
+		if _, err := Load("test-version"); err == nil {
+			t.Error("Expected error for command poll interval too short")
 		}
 	})
 }
