@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -51,6 +52,21 @@ func (c *Client) IsAvailable(ctx context.Context) bool {
 		return false
 	}
 	return true
+}
+
+// ServerVersion returns the version of the Docker engine the client is
+// connected to.
+func (c *Client) ServerVersion(ctx context.Context) (string, error) {
+	if c == nil || c.cli == nil {
+		return "", errors.New("docker client is not initialised")
+	}
+
+	version, err := c.cli.ServerVersion(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get docker version: %w", err)
+	}
+
+	return version.Version, nil
 }
 
 // Close closes the Docker client connection

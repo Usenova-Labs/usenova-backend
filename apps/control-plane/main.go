@@ -11,6 +11,8 @@ import (
 
 	"github.com/byoi-platform/control-plane/internal/agent"
 	"github.com/byoi-platform/control-plane/internal/server"
+	stellarhandler "github.com/byoi-platform/control-plane/internal/stellar"
+	"github.com/byoi-platform/stellar"
 	"github.com/sirupsen/logrus"
 )
 
@@ -29,9 +31,26 @@ func main() {
 		"commit":  commit,
 	}).Info("Usenova Control Plane starting")
 
-	// Initialize agent store
-	agentStore := agent.NewAgentStore()
-	log.Info("Agent store initialized")
+	// Initialize persistent agent registry (SQLite)
+	dbPath := os.Getenv("CONTROL_PLANE_DB_PATH")
+	if dbPath == "" {
+		dbPath = "data/control-plane.db"
+	}
+
+	db, err := agent.OpenSQLite(dbPath)
+	if err != nil {
+		log.WithError(err).Fatalf("Failed to open agent registry database")
+	}
+	defer db.Close()
+
+	agentStore, err := agent.NewPersistentAgentStore(db)
+	if err != nil {
+		log.WithError(err).Fatalf("Failed to load agent registry")
+	}
+	log.WithFields(logrus.Fields{
+		"path":   dbPath,
+		"agents": len(agentStore.ListAgents()),
+	}).Info("Agent registry initialized")
 
 	// Initialize agent handler
 	agentHandler := agent.NewHandler(agentStore, log)
@@ -48,6 +67,18 @@ func main() {
 
 	// Setup HTTP server with all routes
 	srv := server.NewServer(agentHandler, commandHandler, log)
+	// Initialize Stellar account linking (env-driven; no keys stored).
+	stCfg, err := stellarhandler.Load()
+	if err != nil {
+		log.Fatalf("Invalid Stellar configuration: %v", err)
+	}
+	log.WithField("config", stCfg.String()).Info("Stellar configuration loaded")
+	stStore := stellarhandler.NewAccountStore()
+	stClient := stellar.NewClient(stCfg.Stellar)
+	stellarHandler := stellarhandler.NewHandler(stStore, stClient, stCfg.Stellar.Network, log)
+
+	// Setup HTTP server with all routes
+	srv := server.NewServer(agentHandler, stellarHandler, log)
 
 	httpServer := &http.Server{
 		Addr:    ":8080",
@@ -68,6 +99,10 @@ func main() {
 		log.Info("  GET  /api/v1/agents/:agentID/commands/:id      (operator token)")
 		log.Info("  GET  /api/v1/agents/:agentID/commands/next     (agent session token)")
 		log.Info("  POST /api/v1/agents/:agentID/commands/:id/result (agent session token)")
+		log.Info("  POST /api/v1/stellar/accounts")
+		log.Info("  GET  /api/v1/stellar/accounts")
+		log.Info("  DELETE /api/v1/stellar/accounts/:address")
+		log.Info("  GET  /api/v1/stellar/accounts/:address/balance")
 
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)

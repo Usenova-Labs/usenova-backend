@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/byoi-platform/control-plane/internal/agent"
+	stellarhandler "github.com/byoi-platform/control-plane/internal/stellar"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
@@ -13,11 +14,13 @@ type Server struct {
 	router         *gin.Engine
 	agentHandler   *agent.Handler
 	commandHandler *agent.CommandHandler
+	stellarHandler *stellarhandler.Handler
 	logger         *logrus.Logger
 }
 
 // NewServer creates a new HTTP server with all routes configured
 func NewServer(agentHandler *agent.Handler, commandHandler *agent.CommandHandler, logger *logrus.Logger) *Server {
+func NewServer(agentHandler *agent.Handler, stellarHandler *stellarhandler.Handler, logger *logrus.Logger) *Server {
 	router := gin.Default()
 
 	// Set up middleware
@@ -28,6 +31,7 @@ func NewServer(agentHandler *agent.Handler, commandHandler *agent.CommandHandler
 		router:         router,
 		agentHandler:   agentHandler,
 		commandHandler: commandHandler,
+		stellarHandler: stellarHandler,
 		logger:         logger,
 	}
 
@@ -51,10 +55,16 @@ func (s *Server) setupRoutes() {
 		// Agent management endpoints
 		agents := v1.Group("/agents")
 		{
+			// Registration is unauthenticated: this is where the session
+			// token is first issued.
 			agents.POST("/register", s.agentHandler.RegisterAgent)
-			agents.POST("/:agentID/heartbeat", s.agentHandler.HandleHeartbeat)
-			agents.GET("", s.agentHandler.ListAgents)        // Bonus endpoint
-			agents.GET("/:agentID", s.agentHandler.GetAgent) // Bonus endpoint
+
+			// Agent-scoped routes require the bearer session token issued at
+			// registration.
+			agents.POST("/:agentID/heartbeat", s.agentHandler.RequireAgentAuth(), s.agentHandler.HandleHeartbeat)
+			agents.GET("/:agentID", s.agentHandler.RequireAgentAuth(), s.agentHandler.GetAgent) // Bonus endpoint
+
+			agents.GET("", s.agentHandler.ListAgents) // Bonus endpoint
 		}
 
 		// Command channel: operators enqueue commands, agents claim and
@@ -71,6 +81,20 @@ func (s *Server) setupRoutes() {
 		// services := v1.Group("/services")
 		// deployments := v1.Group("/deployments")
 		// payments := v1.Group("/payments")
+
+		// Stellar account linking and balance queries
+		if s.stellarHandler != nil {
+			stellarGroup := v1.Group("/stellar")
+			{
+				accounts := stellarGroup.Group("/accounts")
+				{
+					accounts.POST("", s.stellarHandler.LinkAccount)
+					accounts.GET("", s.stellarHandler.ListAccounts)
+					accounts.DELETE("/:address", s.stellarHandler.UnlinkAccount)
+					accounts.GET("/:address/balance", s.stellarHandler.GetBalance)
+				}
+			}
+		}
 	}
 }
 

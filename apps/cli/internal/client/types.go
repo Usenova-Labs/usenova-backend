@@ -8,6 +8,7 @@ import (
 // ListResponse is the agent's GET /services payload.
 type ListResponse struct {
 	Running  int       `json:"running"`
+	Failed   int       `json:"failed"`
 	Services []Service `json:"services"`
 }
 
@@ -20,6 +21,10 @@ type ServiceSpec struct {
 	Volumes       []string          `json:"volumes,omitempty"`
 	HealthCheck   *HealthCheck      `json:"health_check,omitempty"`
 	RestartPolicy string            `json:"restart_policy,omitempty"`
+
+	MaxRestarts           int `json:"max_restarts,omitempty"`
+	RestartWindowSeconds  int `json:"restart_window_seconds,omitempty"`
+	RestartBackoffSeconds int `json:"restart_backoff_seconds,omitempty"`
 }
 
 // HealthCheck mirrors the agent-side health check configuration.

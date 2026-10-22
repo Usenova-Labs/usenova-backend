@@ -182,3 +182,44 @@ func TestServiceSpecJSONPrefersCurrentShape(t *testing.T) {
 		t.Errorf("HealthCheck = %+v, want path=/new (current shape wins)", spec.HealthCheck)
 	}
 }
+
+// TestServiceSpecJSONDecodesRestartLimits locks the agent API contract for
+// the per-service restart limits.
+func TestServiceSpecJSONDecodesRestartLimits(t *testing.T) {
+	payload := `{
+		"name": "web",
+		"image": "nginx:1.25",
+		"max_restarts": 5,
+		"restart_window_seconds": 300,
+		"restart_backoff_seconds": 15
+	}`
+
+	var spec ServiceSpec
+	if err := json.Unmarshal([]byte(payload), &spec); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if spec.MaxRestarts != 5 {
+		t.Errorf("MaxRestarts = %d, want 5", spec.MaxRestarts)
+	}
+	if spec.RestartWindowSeconds != 300 {
+		t.Errorf("RestartWindowSeconds = %d, want 300", spec.RestartWindowSeconds)
+	}
+	if spec.RestartBackoffSeconds != 15 {
+		t.Errorf("RestartBackoffSeconds = %d, want 15", spec.RestartBackoffSeconds)
+	}
+
+	b, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	for _, key := range []string{"max_restarts", "restart_window_seconds", "restart_backoff_seconds"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("marshaled spec missing key %q: %s", key, b)
+		}
+	}
+}

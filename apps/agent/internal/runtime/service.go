@@ -60,6 +60,13 @@ type Service struct {
 	// RestartCount counts agent-initiated restarts (health or crash)
 	RestartCount int
 
+	// RestartAttempts counts restart attempts inside the current restart
+	// window. It is what the restart breaker compares against its limit.
+	RestartAttempts int
+
+	// LastRestartAt is when the last restart attempt was made
+	LastRestartAt time.Time
+
 	// LastError holds the last error observed for this service, if any
 	LastError error
 
@@ -70,6 +77,21 @@ type Service struct {
 
 	// cancel cancels the in-flight deploy for this incarnation, if any.
 	cancel context.CancelFunc
+
+	// restart is the circuit breaker that bounds how often this service may
+	// be restarted. It is nil only for services that were never deployed.
+	restart *restartBreaker
+
+	// restartExhausted marks a service that used up its restart budget. The
+	// reconcile loop leaves it alone: it stays failed until it is deployed
+	// again.
+	restartExhausted bool
+
+	// restartPendingSeq is the sequence number of the deferred restart that
+	// is currently queued for this service (0 means none is queued). The
+	// number identifies the queued attempt, so a goroutine that finishes late
+	// cannot clear a newer pending attempt.
+	restartPendingSeq uint64
 }
 
 // ShortID returns a shortened container ID for logging

@@ -5,6 +5,7 @@ The Usenova Agent is a lightweight daemon that runs on user infrastructure to ma
 ## Features
 
 - **Automatic Registration**: Registers with Control Plane on startup
+- **Machine Inventory**: Reports OS, architecture, CPU count, memory and Docker version
 - **Heartbeat System**: Periodic status updates to maintain connectivity
 - **Docker Integration**: Detects and manages Docker-based services (coming soon)
 - **Health Monitoring**: Tracks service health and reports status
@@ -21,7 +22,26 @@ The agent is configured via environment variables:
 | `AGENT_ID` | No | auto-generated | Unique agent identifier |
 | `HEARTBEAT_INTERVAL` | No | `30s` | Heartbeat frequency |
 | `COMMAND_POLL_INTERVAL` | No | `10s` | How often the agent asks the Control Plane for pending commands |
+| `RESTART_MAX_RESTARTS` | No | `3` | Restarts allowed per window before a service is failed (`0` = unlimited) |
+| `RESTART_WINDOW` | No | `10m` | Sliding window over which restart attempts are counted |
+| `RESTART_BACKOFF` | No | `30s` | Base delay between restart attempts (doubles with every attempt, capped at 5m) |
 | `DEBUG` | No | - | Enable debug logging |
+
+### Restart limits
+
+A service that keeps crashing (or keeps failing its health checks) is not
+restarted forever. The agent counts restart attempts inside a sliding window
+and waits between them with an exponential backoff. When the budget is
+exhausted the service is marked `failed`, health monitoring stops, and the
+agent leaves it alone until it is deployed again.
+
+The limits above apply to every service; a deployment can override them with
+`max_restarts`, `restart_window_seconds` and `restart_backoff_seconds` in the
+service spec (`nova deploy --max-restarts 5 --restart-window 300`).
+
+The base delay doubles with every attempt and is capped at 5m. A base delay
+configured above that cap is never shortened: the cap is raised to the
+configured base delay instead.
 
 ### Example Configuration
 
@@ -68,6 +88,42 @@ sudo vim /etc/usenova/agent.env
 # Run the agent
 USENOVA_CONFIG=/etc/usenova/agent.env usenova-agent
 ```
+
+## Registration
+
+On startup the agent registers with the control plane and reports a
+best-effort inventory of the machine it runs on:
+
+```json
+{
+  "agent_id": "optional-id",
+  "hostname": "my-host",
+  "version": "1.0.0",
+  "capabilities": { "docker": true },
+  "system": {
+    "os": "linux",
+    "arch": "amd64",
+    "cpu_count": 8,
+    "memory_bytes": 17179869184,
+    "docker_version": "24.0.7"
+  }
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `os` | Operating system (`runtime.GOOS`) |
+| `arch` | CPU architecture (`runtime.GOARCH`) |
+| `cpu_count` | Number of logical CPUs (`runtime.NumCPU()`) |
+| `memory_bytes` | Total physical memory of the host, `0` when it cannot be determined |
+| `docker_version` | Docker engine version, empty when Docker is unavailable |
+
+Every value is best-effort: the agent still registers when a value cannot be
+determined, and the control plane accepts registrations that omit the
+inventory entirely (older agents).
+
+The inventory is refreshed on every heartbeat, so dynamic values (e.g. a
+Docker engine upgrade) reach the control plane without a re-registration.
 
 ## Local Control API
 
@@ -155,9 +211,11 @@ apps/agent/
 │   │   └── config.go
 │   ├── agent/             # Main orchestration logic
 │   │   └── agent.go
-│   └── controlplane/      # Control Plane communication
-│       ├── client.go      # HTTP client
-│       └── types.go       # Request/response types
+│   ├── controlplane/      # Control Plane communication
+│   │   ├── client.go      # HTTP client
+│   │   └── types.go       # Request/response types
+│   └── systeminfo/        # Machine inventory detection
+│       └── systeminfo.go
 ├── .env.example           # Example configuration
 └── README.md              # This file
 ```

@@ -82,6 +82,13 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	log.Printf("   Hostname: %s", req.Hostname)
 	log.Printf("   Version: %s", req.Version)
 	log.Printf("   Docker Available: %v", req.Capabilities.Docker)
+	if req.System != nil {
+		log.Printf("   OS: %s", req.System.OS)
+		log.Printf("   Arch: %s", req.System.Arch)
+		log.Printf("   CPU Count: %d", req.System.CPUCount)
+		log.Printf("   Memory: %d bytes", req.System.MemoryBytes)
+		log.Printf("   Docker Version: %s", req.System.DockerVersion)
+	}
 
 	// Send success response
 	w.Header().Set("Content-Type", "application/json")

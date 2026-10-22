@@ -42,6 +42,19 @@ var reservedLabels = map[string]bool{
 // that a newer intent (stop/remove/redeploy) has replaced it.
 var errSuperseded = errors.New("operation superseded")
 
+// restartKind selects which container operation a restart attempt performs.
+type restartKind int
+
+const (
+	// restartKindHealth restarts a running container that fails its health
+	// checks.
+	restartKindHealth restartKind = iota
+	// restartKindStart starts a container that exited.
+	restartKindStart
+	// restartKindRedeploy re-provisions a container that is gone.
+	restartKindRedeploy
+)
+
 // ErrServiceNotFound is returned when the named service is not managed by this
 // agent. Callers (the local API) map it to 404 instead of a generic failure.
 var ErrServiceNotFound = errors.New("service not found")
@@ -56,6 +69,11 @@ var ErrRuntimeUnavailable = errors.New("container runtime unavailable")
 // Secrets (env values, registry credentials) are deliberately excluded.
 type serviceMeta struct {
 	HealthCheck *docker.HealthConfig `json:"health_check,omitempty"`
+	// Restart limits are persisted too, so a restarted agent keeps enforcing
+	// the same policy for the services it re-adopts.
+	MaxRestarts           int `json:"max_restarts,omitempty"`
+	RestartWindowSeconds  int `json:"restart_window_seconds,omitempty"`
+	RestartBackoffSeconds int `json:"restart_backoff_seconds,omitempty"`
 }
 
 // ContainerRuntime is the subset of the Docker wrapper the manager depends on.
@@ -83,10 +101,28 @@ type Manager struct {
 	mu             sync.RWMutex
 	services       map[string]*Service
 	started        bool
+	stopped        bool
 	ctx            context.Context
 	reconcileStop  chan struct{}
 	reconcileDone  sync.WaitGroup
 	reconcileEvery time.Duration
+
+	// restartPolicy holds the agent-wide restart limits applied to services
+	// that do not override them in their spec.
+	restartPolicy RestartPolicy
+
+	// stopCh is closed when the manager stops. Deferred restarts waiting out
+	// a backoff abandon their wait instead of touching Docker after shutdown.
+	stopCh   chan struct{}
+	stopOnce sync.Once
+
+	// scheduled tracks deferred restarts so Stop can wait for them: no
+	// container-mutating work may outlive the manager.
+	scheduled sync.WaitGroup
+
+	// restartSeq numbers the deferred restarts so a service can tell which
+	// queued attempt it is holding.
+	restartSeq uint64
 
 	// opLocks serialise container-mutating operations per service name. They
 	// are separate from mu so long-running network work (image pulls) never
@@ -103,6 +139,8 @@ func NewManager(dc ContainerRuntime, log *logrus.Logger) *Manager {
 		services:       make(map[string]*Service),
 		opLocks:        make(map[string]*sync.Mutex),
 		reconcileEvery: defaultReconcileInterval,
+		restartPolicy:  DefaultRestartPolicy(),
+		stopCh:         make(chan struct{}),
 	}
 
 	// Health monitor restarts unhealthy services through our own handler.
@@ -155,6 +193,7 @@ func (m *Manager) Stop(ctx context.Context) {
 		return
 	}
 	m.started = false
+	m.stopped = true
 	stop := m.reconcileStop
 	for _, svc := range m.services {
 		if svc.cancel != nil {
@@ -166,6 +205,10 @@ func (m *Manager) Stop(ctx context.Context) {
 	if stop != nil {
 		close(stop)
 	}
+
+	// Wake deferred restarts so they abandon their wait instead of running
+	// against a stopped manager.
+	m.stopOnce.Do(func() { close(m.stopCh) })
 
 	done := make(chan struct{})
 	go func() {
@@ -182,7 +225,75 @@ func (m *Manager) Stop(ctx context.Context) {
 	}
 
 	m.monitor.Stop()
+
+	// Deferred restarts must not outlive the manager either.
+	scheduled := make(chan struct{})
+	go func() {
+		m.scheduled.Wait()
+		close(scheduled)
+	}()
+	select {
+	case <-scheduled:
+	case <-ctx.Done():
+		m.log.Warn("Runtime manager stop timed out waiting for deferred restarts")
+	case <-time.After(10 * time.Second):
+		m.log.Warn("Runtime manager deferred restarts did not stop within 10s")
+	}
+
 	m.log.Info("Runtime manager stopped")
+}
+
+// SetRestartPolicy sets the agent-wide restart limits. Services that do not
+// override them in their spec inherit these values.
+func (m *Manager) SetRestartPolicy(policy RestartPolicy) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if policy.MaxBackoff > 0 && policy.MaxBackoff < policy.Backoff {
+		// Never cap the configured base backoff below itself.
+		policy.MaxBackoff = policy.Backoff
+	}
+	m.restartPolicy = policy
+}
+
+// baseCtx returns the manager's long-lived context. Scheduled restarts use it
+// because they run after the request that triggered them has returned.
+func (m *Manager) baseCtx() context.Context {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.ctx != nil {
+		return m.ctx
+	}
+	return context.Background()
+}
+
+// policyForSpec merges the agent-wide restart limits with the per-service
+// overrides carried by the spec. A zero value in the spec means "inherit the
+// agent default"; a negative max_restarts means "never limit restarts".
+func (m *Manager) policyForSpec(spec docker.ServiceSpec) RestartPolicy {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.policyForSpecLocked(spec)
+}
+
+// policyForSpecLocked is policyForSpec for callers that already hold the
+// manager lock.
+func (m *Manager) policyForSpecLocked(spec docker.ServiceSpec) RestartPolicy {
+	policy := m.restartPolicy
+
+	if spec.MaxRestarts != 0 {
+		policy.MaxRestarts = spec.MaxRestarts
+	}
+	if spec.RestartWindowSeconds > 0 {
+		policy.Window = time.Duration(spec.RestartWindowSeconds) * time.Second
+	}
+	if spec.RestartBackoffSeconds > 0 {
+		policy.Backoff = time.Duration(spec.RestartBackoffSeconds) * time.Second
+		if policy.MaxBackoff > 0 && policy.MaxBackoff < policy.Backoff {
+			// Never clamp the configured base backoff below itself.
+			policy.MaxBackoff = policy.Backoff
+		}
+	}
+	return policy
 }
 
 // DeployService pulls the image, creates and starts the container, and
@@ -197,6 +308,10 @@ func (m *Manager) DeployService(ctx context.Context, spec docker.ServiceSpec) (*
 	if m.docker == nil {
 		return nil, fmt.Errorf("docker client not initialized")
 	}
+
+	// Resolve the restart limits before taking the lock: a redeploy starts a
+	// fresh restart budget for the new incarnation.
+	restartPolicy := m.policyForSpec(spec)
 
 	m.mu.Lock()
 	existing := m.services[spec.Name]
@@ -220,6 +335,7 @@ func (m *Manager) DeployService(ctx context.Context, spec docker.ServiceSpec) (*
 		State:        ServiceStatePending,
 		DesiredState: ServiceStateRunning,
 		cancel:       cancel,
+		restart:      newRestartBreaker(restartPolicy),
 	}
 	if existing != nil {
 		svc.generation = existing.generation + 1
@@ -374,6 +490,13 @@ func (m *Manager) StopService(ctx context.Context, name string) error {
 	if m.services[name] == svc && svc.generation == gen {
 		svc.State = ServiceStateStopped
 		svc.LastError = nil
+		// An intentional stop ends the current restart budget: the service
+		// can be started again without being marked failed.
+		svc.restartExhausted = false
+		if svc.restart != nil {
+			svc.restart.reset()
+			svc.RestartAttempts = 0
+		}
 	}
 	m.mu.Unlock()
 
@@ -439,6 +562,21 @@ func (m *Manager) RunningCount() int {
 	count := 0
 	for _, svc := range m.services {
 		if svc.State == ServiceStateRunning {
+			count++
+		}
+	}
+	return count
+}
+
+// FailedCount returns the number of services the agent gave up on (they
+// exhausted their restart budget or their deploy failed). It is a cheap
+// heartbeat-safe count of services that need operator attention.
+func (m *Manager) FailedCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	count := 0
+	for _, svc := range m.services {
+		if svc.State == ServiceStateFailed {
 			count++
 		}
 	}
@@ -533,7 +671,8 @@ func (m *Manager) Health() *health.Monitor {
 }
 
 // onUnhealthy is invoked by the health monitor when a service fails its
-// checks. Restarts the container according to the service restart policy.
+// checks. Restarts the container according to the service restart policy,
+// bounded by the service's restart breaker.
 func (m *Manager) onUnhealthy(ctx context.Context, name string) error {
 	m.mu.RLock()
 	svc, ok := m.services[name]
@@ -541,13 +680,13 @@ func (m *Manager) onUnhealthy(ctx context.Context, name string) error {
 		m.mu.RUnlock()
 		return fmt.Errorf("unhealthy callback for unknown service %s", name)
 	}
-	id := svc.ContainerID
 	policy := svc.Spec.RestartPolicy
 	desired := svc.DesiredState
+	state := svc.State
 	gen := svc.generation
 	m.mu.RUnlock()
 
-	if desired != ServiceStateRunning || svc.State == ServiceStateStopped {
+	if desired != ServiceStateRunning || state == ServiceStateStopped {
 		m.log.WithField("service", name).Debug("Ignoring unhealthy signal for non-running service")
 		return nil
 	}
@@ -561,10 +700,185 @@ func (m *Manager) onUnhealthy(ctx context.Context, name string) error {
 		return nil
 	}
 
-	if id == "" {
-		return fmt.Errorf("service %s has no container to restart", name)
+	return m.attemptRestart(ctx, name, svc, gen, restartKindHealth)
+}
+
+// attemptRestart centralises every agent-initiated restart. The service's
+// restart breaker decides whether the attempt is allowed: it caps the number
+// of restarts per window and applies a backoff between attempts.
+//
+// A deferred attempt is scheduled instead of being dropped, so a service that
+// is flapping still gets its restart once the backoff elapsed. When the
+// breaker refuses the attempt the service is marked failed and health
+// monitoring stops, so the agent no longer touches it.
+func (m *Manager) attemptRestart(ctx context.Context, name string, svc *Service, gen uint64, kind restartKind) error {
+	decision, ok := m.permitRestart(name, svc, gen)
+	if !ok {
+		// The service was stopped, removed or redeployed meanwhile.
+		return nil
 	}
 
+	if !decision.Allowed {
+		m.failRestartLimit(name, svc, gen, decision)
+		return nil
+	}
+
+	if decision.Deferred {
+		m.scheduleRestart(name, svc, gen, decision.NextAttemptAt, kind)
+		return nil
+	}
+
+	m.recordRestartAttempt(name, svc, gen)
+	return m.performRestart(ctx, name, svc, gen, kind)
+}
+
+// permitRestart asks the service's restart breaker whether a restart attempt
+// may be made now. ok is false when the service is no longer the current
+// incarnation, in which case the caller must not touch it.
+func (m *Manager) permitRestart(name string, svc *Service, gen uint64) (restartDecision, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.isSameLocked(name, svc, gen) {
+		return restartDecision{}, false
+	}
+	if svc.restart == nil {
+		svc.restart = newRestartBreaker(m.policyForSpecLocked(svc.Spec))
+	}
+	decision := svc.restart.decide(time.Now())
+	svc.RestartAttempts = decision.Attempts
+	return decision, true
+}
+
+// recordRestartAttempt registers a restart attempt with the service's
+// breaker and refreshes the counters exposed in the service status.
+func (m *Manager) recordRestartAttempt(name string, svc *Service, gen uint64) {
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.isSameLocked(name, svc, gen) {
+		return
+	}
+	if svc.restart == nil {
+		svc.restart = newRestartBreaker(m.policyForSpecLocked(svc.Spec))
+	}
+	svc.restart.record(now)
+	svc.RestartAttempts = svc.restart.count(now)
+	svc.LastRestartAt = now
+}
+
+// scheduleRestart arranges for a deferred restart attempt to run once the
+// backoff has elapsed. The attempt is re-evaluated when it runs, so a service
+// that exceeded its restart limit in the meantime is failed instead of
+// restarted.
+//
+// Only one deferred restart is queued per service: a second unhealthy
+// transition (or a reconcile pass) must not stack up another attempt that
+// would restart the container again at the next backoff boundary.
+func (m *Manager) scheduleRestart(name string, svc *Service, gen uint64, at time.Time, kind restartKind) {
+	m.mu.Lock()
+	if m.stopped || !m.isSameLocked(name, svc, gen) {
+		m.mu.Unlock()
+		return
+	}
+	if svc.restartPendingSeq != 0 {
+		// A deferred restart is already queued for this service.
+		m.mu.Unlock()
+		m.log.WithField("service", name).Debug("Restart already deferred; not queueing another one")
+		return
+	}
+	m.restartSeq++
+	seq := m.restartSeq
+	svc.restartPendingSeq = seq
+	m.scheduled.Add(1)
+	m.mu.Unlock()
+
+	// The attempt outlives the caller (the health callback context is short
+	// lived), so it runs on the manager's context instead.
+	ctx := m.baseCtx()
+
+	m.log.WithFields(logrus.Fields{
+		"service": name,
+		"at":      at.Format(time.RFC3339),
+	}).Info("Restart deferred by backoff")
+
+	go func() {
+		defer m.scheduled.Done()
+		defer m.clearRestartPending(name, svc, gen, seq)
+
+		timer := time.NewTimer(time.Until(at))
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return
+		case <-m.stopCh:
+			return
+		}
+
+		// Release the slot before the attempt so an attempt that is deferred
+		// again can queue itself.
+		m.clearRestartPending(name, svc, gen, seq)
+
+		// The service may have recovered while the backoff was running.
+		// Restarting it now would be harmful, and it must not spend part of
+		// the restart budget either.
+		if kind == restartKindHealth && m.serviceRecovered(name) {
+			m.log.WithField("service", name).Info("Service recovered; skipping deferred restart")
+			return
+		}
+
+		m.log.WithFields(logrus.Fields{
+			"service": name,
+			"at":      at.Format(time.RFC3339),
+		}).Info("Deferred restart is due; running it now")
+
+		if err := m.attemptRestart(ctx, name, svc, gen, kind); err != nil {
+			m.log.WithError(err).WithField("service", name).Warn("Deferred restart failed")
+		}
+	}()
+}
+
+// clearRestartPending releases the deferred restart slot of a service. The
+// sequence number makes it a no-op when a newer attempt already took the slot.
+func (m *Manager) clearRestartPending(name string, svc *Service, gen uint64, seq uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.isSameLocked(name, svc, gen) {
+		return
+	}
+	if svc.restartPendingSeq == seq {
+		svc.restartPendingSeq = 0
+	}
+}
+
+// serviceRecovered reports whether the health monitor considers the service
+// healthy again. A service that is not monitored is never considered
+// recovered.
+func (m *Manager) serviceRecovered(name string) bool {
+	h, ok := m.monitor.GetServiceHealth(name)
+	return ok && h.IsHealthy
+}
+
+// performRestart performs the container operation of an allowed restart
+// attempt. The service currency is re-checked under the operation lock so a
+// concurrent stop/remove/redeploy wins over a stale restart.
+func (m *Manager) performRestart(ctx context.Context, name string, svc *Service, gen uint64, kind restartKind) error {
+	switch kind {
+	case restartKindHealth:
+		return m.restartContainer(ctx, name, svc, gen)
+	case restartKindStart:
+		return m.startContainer(ctx, name, svc, gen)
+	case restartKindRedeploy:
+		m.redeploy(ctx, name, svc, gen)
+		return nil
+	default:
+		return nil
+	}
+}
+
+// restartContainer restarts a running container that failed its health
+// checks.
+func (m *Manager) restartContainer(ctx context.Context, name string, svc *Service, gen uint64) error {
 	lock := m.opLock(name)
 	lock.Lock()
 	defer lock.Unlock()
@@ -576,7 +890,13 @@ func (m *Manager) onUnhealthy(ctx context.Context, name string) error {
 		m.mu.RUnlock()
 		return nil
 	}
+	id := svc.ContainerID
+	policy := svc.Spec.RestartPolicy
 	m.mu.RUnlock()
+
+	if id == "" {
+		return fmt.Errorf("service %s has no container to restart", name)
+	}
 
 	m.log.WithFields(logrus.Fields{
 		"service": name,
@@ -597,8 +917,52 @@ func (m *Manager) onUnhealthy(ctx context.Context, name string) error {
 		s.LastError = nil
 	})
 
-	// TODO: back off / give up after N consecutive restarts (circuit breaker).
 	return nil
+}
+
+// startContainer starts an exited container. A container that cannot be
+// started is re-provisioned from its spec.
+func (m *Manager) startContainer(ctx context.Context, name string, svc *Service, gen uint64) error {
+	lock := m.opLock(name)
+	lock.Lock()
+	if !m.current(name, svc, gen) {
+		lock.Unlock()
+		return nil
+	}
+	id := svc.ContainerID
+	err := m.docker.StartContainer(ctx, id)
+	lock.Unlock()
+
+	if err != nil {
+		m.log.WithError(err).WithField("service", name).Warn("Start failed; redeploying")
+		m.redeploy(ctx, name, svc, gen)
+		return nil
+	}
+
+	m.updateIfCurrent(name, svc, gen, func(s *Service) {
+		s.RestartCount++
+		s.State = ServiceStateRunning
+	})
+	return nil
+}
+
+// failRestartLimit marks a service as failed because it exhausted its restart
+// budget and stops health monitoring, so the agent leaves it alone until an
+// operator deploys it again.
+func (m *Manager) failRestartLimit(name string, svc *Service, gen uint64, decision restartDecision) {
+	err := fmt.Errorf("restart limit reached: %s", decision.Reason)
+	if !m.updateIfCurrent(name, svc, gen, func(s *Service) {
+		s.State = ServiceStateFailed
+		s.LastError = err
+		s.restartExhausted = true
+	}) {
+		return
+	}
+	m.monitor.RemoveService(name)
+	m.log.WithFields(logrus.Fields{
+		"service":  name,
+		"attempts": decision.Attempts,
+	}).Error("Service exceeded its restart limit; not restarting it again")
 }
 
 // reconcileLoop periodically inspects managed containers and corrects drift.
@@ -661,6 +1025,7 @@ func (m *Manager) reconcileService(ctx context.Context, name string, svc *Servic
 	desired := svc.DesiredState
 	id := svc.ContainerID
 	policy := svc.Spec.RestartPolicy
+	exhausted := svc.restartExhausted
 	m.mu.RUnlock()
 
 	switch desired {
@@ -672,10 +1037,17 @@ func (m *Manager) reconcileService(ctx context.Context, name string, svc *Servic
 		return
 	}
 
+	if exhausted {
+		// The service used up its restart budget: it stays failed until it
+		// is deployed again. Stop and removal intents are handled above, so
+		// a failed stop or removal can still be retried.
+		return
+	}
+
 	// desired == running
 	if id == "" {
 		if shouldRestart(policy) {
-			m.redeploy(ctx, name, svc, gen)
+			m.attemptRestart(ctx, name, svc, gen, restartKindRedeploy)
 		}
 		return
 	}
@@ -687,7 +1059,7 @@ func (m *Manager) reconcileService(ctx context.Context, name string, svc *Servic
 				"service": name,
 				"error":   err.Error(),
 			}).Warn("Managed container missing; redeploying")
-			m.redeploy(ctx, name, svc, gen)
+			m.attemptRestart(ctx, name, svc, gen, restartKindRedeploy)
 		} else {
 			m.updateIfCurrent(name, svc, gen, func(s *Service) {
 				s.State = ServiceStateFailed
@@ -718,29 +1090,12 @@ func (m *Manager) reconcileService(ctx context.Context, name string, svc *Servic
 		return
 	}
 
-	lock := m.opLock(name)
-	lock.Lock()
-	if !m.current(name, svc, gen) {
-		lock.Unlock()
-		return
-	}
 	m.log.WithFields(logrus.Fields{
 		"service":   name,
 		"exit_code": exitCode,
 		"policy":    policy,
 	}).Warn("Managed container exited; restarting")
-	err = m.docker.StartContainer(ctx, id)
-	lock.Unlock()
-
-	if err != nil {
-		m.log.WithError(err).WithField("service", name).Warn("Start failed; redeploying")
-		m.redeploy(ctx, name, svc, gen)
-		return
-	}
-	m.updateIfCurrent(name, svc, gen, func(s *Service) {
-		s.RestartCount++
-		s.State = ServiceStateRunning
-	})
+	m.attemptRestart(ctx, name, svc, gen, restartKindStart)
 }
 
 // reconcileRemoval retries removal until the container is actually gone.
@@ -930,6 +1285,7 @@ func (m *Manager) adopt(ctx context.Context) {
 			State:        state,
 			DesiredState: desired,
 			generation:   1,
+			restart:      newRestartBreaker(m.policyForSpec(spec)),
 		}
 		if info.State != nil {
 			if t, perr := time.Parse(time.RFC3339Nano, info.State.StartedAt); perr == nil {
@@ -1022,6 +1378,9 @@ func specFromInspect(name string, info *types.ContainerJSON, metaRaw string) doc
 		var meta serviceMeta
 		if err := json.Unmarshal([]byte(metaRaw), &meta); err == nil {
 			spec.HealthCheck = meta.HealthCheck
+			spec.MaxRestarts = meta.MaxRestarts
+			spec.RestartWindowSeconds = meta.RestartWindowSeconds
+			spec.RestartBackoffSeconds = meta.RestartBackoffSeconds
 		}
 	}
 
@@ -1073,8 +1432,14 @@ func managedLabels(spec docker.ServiceSpec) map[string]string {
 		labelManaged: "true",
 		labelService: spec.Name,
 	}
-	if meta, err := json.Marshal(serviceMeta{HealthCheck: spec.HealthCheck}); err == nil {
-		labels[labelMeta] = string(meta)
+	meta := serviceMeta{
+		HealthCheck:           spec.HealthCheck,
+		MaxRestarts:           spec.MaxRestarts,
+		RestartWindowSeconds:  spec.RestartWindowSeconds,
+		RestartBackoffSeconds: spec.RestartBackoffSeconds,
+	}
+	if encoded, err := json.Marshal(meta); err == nil {
+		labels[labelMeta] = string(encoded)
 	}
 	for k, v := range spec.Labels {
 		if reservedLabels[k] {

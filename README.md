@@ -78,6 +78,15 @@ bin/nova status
 
 See [apps/cli/README.md](apps/cli/README.md) for the full CLI quick start.
 
+To run the whole local path (control plane + agent + CLI + deploy + kill/restart) end to end:
+
+```bash
+./scripts/e2e-smoke.sh
+```
+
+The script prints a pass/fail line per check and lists the common failures. The same path is
+documented step by step in [docs/getting-started.md](docs/getting-started.md).
+
 ## Development
 
 This is a monorepo managed with Go workspaces and Cargo workspaces. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
@@ -95,7 +104,7 @@ This is a monorepo managed with Go workspaces and Cargo workspaces. See [CONTRIB
 │   └── stellar/          # Stellar/Soroban integration
 ├── contracts/            # Soroban smart contracts
 ├── docs/                 # Documentation
-└── scripts/              # Build and deployment scripts
+└── scripts/              # Build, lint, test and end-to-end smoke scripts
 ```
 
 ## Contributing

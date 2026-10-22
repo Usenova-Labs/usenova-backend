@@ -45,6 +45,20 @@ func TestClient_Register(t *testing.T) {
 					t.Error("Expected version in request")
 				}
 
+				// The machine inventory must be reported
+				if req.System == nil {
+					t.Fatal("Expected system info in request")
+				}
+				if req.System.OS == "" {
+					t.Error("Expected OS in system info")
+				}
+				if req.System.Arch == "" {
+					t.Error("Expected arch in system info")
+				}
+				if req.System.CPUCount <= 0 {
+					t.Error("Expected a positive CPU count in system info")
+				}
+
 				// Send success response
 				w.Header().Set("Content-Type", "application/json")
 				response := RegisterResponse{
@@ -104,6 +118,38 @@ func TestClient_Register(t *testing.T) {
 	}
 }
 
+func TestClient_Register_ReportsDockerVersion(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req RegisterRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("Failed to decode request: %v", err)
+		}
+
+		if req.System == nil {
+			t.Fatal("Expected system info in request")
+		}
+		if req.System.DockerVersion != "24.0.7" {
+			t.Errorf("Expected Docker version 24.0.7, got %q", req.System.DockerVersion)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(RegisterResponse{AgentID: "agent-12345"})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token", log)
+	client.SetDockerVersionDetector(func(ctx context.Context) string {
+		return "24.0.7"
+	})
+
+	if _, err := client.Register(context.Background(), "test-agent-id", "test-version"); err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
 func TestClient_SendHeartbeat(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -140,6 +186,14 @@ func TestClient_SendHeartbeat(t *testing.T) {
 				t.Error("Expected non-negative running services count")
 			}
 
+			// The heartbeat refreshes the machine inventory
+			if req.System == nil {
+				t.Fatal("Expected system info in request")
+			}
+			if req.System.OS == "" {
+				t.Error("Expected OS in system info")
+			}
+
 			// Send success response
 			w.Header().Set("Content-Type", "application/json")
 			response := HeartbeatResponse{
@@ -162,6 +216,34 @@ func TestClient_SendHeartbeat(t *testing.T) {
 		}
 	})
 
+	t.Run("heartbeat reports failed services", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req HeartbeatRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("Failed to decode request: %v", err)
+			}
+			if req.Status.RunningServices != 3 {
+				t.Errorf("Expected 3 running services, got %d", req.Status.RunningServices)
+			}
+			if req.Status.FailedServices != 2 {
+				t.Errorf("Expected 2 failed services, got %d", req.Status.FailedServices)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(HeartbeatResponse{Status: "ok"})
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, "test-token", log)
+		client.agentID = "test-agent-123"
+		client.SetServicesCounter(func() int { return 3 })
+		client.SetFailedServicesCounter(func() int { return 2 })
+
+		if err := client.SendHeartbeat(context.Background()); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	})
+
 	t.Run("heartbeat without registration", func(t *testing.T) {
 		client := NewClient("http://localhost:0", "test-token", log)
 		// Don't set agentID - simulate unregistered agent
@@ -172,6 +254,52 @@ func TestClient_SendHeartbeat(t *testing.T) {
 			t.Error("Expected error for unregistered agent")
 		}
 	})
+}
+
+// TestClient_SessionTokenAfterRegister verifies the agent stores the token from
+// registration and sends it (not the bootstrap token) on later requests.
+func TestClient_SessionTokenAfterRegister(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	var registerAuth, heartbeatAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		registerAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(RegisterResponse{
+			AgentID:      "agent-42",
+			SessionToken: "session-abc",
+		})
+	})
+	mux.HandleFunc("/api/v1/agents/agent-42/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		heartbeatAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(HeartbeatResponse{Status: "ok"})
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClient(server.URL, "bootstrap-token", log)
+	ctx := context.Background()
+
+	if _, err := client.Register(ctx, "", "1.0.0"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := client.SendHeartbeat(ctx); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+
+	if registerAuth != "Bearer bootstrap-token" {
+		t.Errorf("register Authorization = %q, want bootstrap token", registerAuth)
+	}
+	if client.GetAgentID() != "agent-42" {
+		t.Errorf("agent ID = %q, want agent-42", client.GetAgentID())
+	}
+	if heartbeatAuth != "Bearer session-abc" {
+		t.Errorf("heartbeat Authorization = %q, want session token", heartbeatAuth)
+	}
 }
 
 func TestClient_Authentication(t *testing.T) {

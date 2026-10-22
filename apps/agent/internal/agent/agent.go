@@ -14,6 +14,7 @@ import (
 	"github.com/byoi-platform/agent/internal/controlplane"
 	"github.com/byoi-platform/agent/internal/docker"
 	"github.com/byoi-platform/agent/internal/runtime"
+	"github.com/byoi-platform/agent/internal/systeminfo"
 )
 
 // Agent represents the main agent orchestrator
@@ -47,6 +48,14 @@ func New(cfg *config.Config, log *logrus.Logger) *Agent {
 	var runtimeMgr *runtime.Manager
 	if dockerClient != nil {
 		runtimeMgr = runtime.NewManager(dockerClient, log)
+		// Restart limits: keep a crash-looping service from being restarted
+		// forever. Services may tighten or loosen this per service.
+		runtimeMgr.SetRestartPolicy(runtime.RestartPolicy{
+			MaxRestarts: cfg.RestartMaxRestarts,
+			Window:      cfg.RestartWindow,
+			Backoff:     cfg.RestartBackoff,
+			MaxBackoff:  runtime.DefaultRestartMaxBackoff,
+		})
 	}
 
 	// Feed real capability + service count into heartbeats/registration.
@@ -61,6 +70,24 @@ func New(cfg *config.Config, log *logrus.Logger) *Agent {
 			return 0
 		}
 		return runtimeMgr.RunningCount()
+	})
+	// Report the Docker engine version as part of the machine inventory.
+	controlPlaneClient.SetDockerVersionDetector(func(ctx context.Context) string {
+		if dockerClient == nil {
+			return ""
+		}
+		version, err := dockerClient.ServerVersion(ctx)
+		if err != nil {
+			log.WithError(err).Debug("Failed to determine Docker version")
+			return ""
+		}
+		return version
+	})
+	controlPlaneClient.SetFailedServicesCounter(func() int {
+		if runtimeMgr == nil {
+			return 0
+		}
+		return runtimeMgr.FailedCount()
 	})
 
 	return &Agent{
@@ -294,8 +321,10 @@ func (a *Agent) GetAgentID() string {
 // GetStatus returns current agent status
 func (a *Agent) GetStatus() map[string]interface{} {
 	running := 0
+	failed := 0
 	if a.runtimeMgr != nil {
 		running = a.runtimeMgr.RunningCount()
+		failed = a.runtimeMgr.FailedCount()
 	}
 
 	dockerAvailable := false
@@ -305,11 +334,18 @@ func (a *Agent) GetStatus() map[string]interface{} {
 		cancel()
 	}
 
+	system := systeminfo.Detect()
+
 	return map[string]interface{}{
 		"agent_id":         a.registrationID,
 		"registered":       a.registrationID != "",
 		"version":          a.config.Version,
 		"docker_available": dockerAvailable,
 		"running_services": running,
+		"os":               system.OS,
+		"arch":             system.Arch,
+		"cpu_count":        system.CPUCount,
+		"memory_bytes":     system.MemoryBytes,
+		"failed_services":  failed,
 	}
 }
