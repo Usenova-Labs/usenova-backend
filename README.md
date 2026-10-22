@@ -71,7 +71,7 @@ mkdir -p bin
 (cd apps/cli && go build -o ../../bin/nova)
 
 # Point it at a local agent and deploy
-export USENOVA_API_TOKEN="<your-agent-token>"
+export NOVA_API_TOKEN="<your-agent-token>"
 bin/nova deploy --name web --image nginx:alpine --port 8080:80
 bin/nova status
 ```

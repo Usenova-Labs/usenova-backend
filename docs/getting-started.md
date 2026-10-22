@@ -83,7 +83,7 @@ HEARTBEAT_INTERVAL=30s \
 | `CONTROL_PLANE_URL` | yes | Where the agent registers and sends heartbeats |
 | `AGENT_TOKEN` | yes | Bearer token sent to the control plane |
 | `API_ADDR` | no | Enables the loopback-only API the `nova` CLI talks to (`127.0.0.1:9090`) |
-| `API_TOKEN` | with `API_ADDR` | Bearer token the CLI must send (`--token` / `USENOVA_API_TOKEN`) |
+| `API_TOKEN` | with `API_ADDR` | Bearer token the CLI must send (`--token` / `NOVA_API_TOKEN` / `USENOVA_API_TOKEN`) |
 | `AGENT_ID` | no | Stable agent id, generated when unset |
 | `HEARTBEAT_INTERVAL` | no | Heartbeat period, `30s` by default |
 
@@ -93,14 +93,14 @@ unreachable.
 Point the CLI at the agent:
 
 ```bash
-export USENOVA_API_TOKEN=dev-api-token
+export NOVA_API_TOKEN=dev-api-token
 ./bin/nova agent status
 # Agent API: http://127.0.0.1:9090 (ok)
 # Running services: 0
 ```
 
-Without `USENOVA_API_TOKEN` (or `--token`) the CLI prints a warning and every request is rejected
-with `401 unauthorized`.
+Without `NOVA_API_TOKEN` (or `USENOVA_API_TOKEN` / `--token`) the CLI prints a warning and every
+request is rejected with `401 unauthorized`.
 
 ## 4. Deploy a service
 
@@ -215,7 +215,7 @@ service and prints a summary. Logs of the run stay in `bin/smoke/`.
 
 | Symptom | Cause and fix |
 |---|---|
-| `warning: no API token configured` | The CLI has no token. Export `USENOVA_API_TOKEN` or pass `--token`; it must match the agent's `API_TOKEN` |
+| `warning: no API token configured` | The CLI has no token. Export `NOVA_API_TOKEN` (or `USENOVA_API_TOKEN`) or pass `--token`; it must match the agent's `API_TOKEN` |
 | `401 unauthorized` | The token does not match `API_TOKEN`, or `API_TOKEN` is unset on the agent |
 | `refusing to bind to non-loopback address` | `API_ADDR` must be a loopback address such as `127.0.0.1:9090`; `:9090` and `0.0.0.0:9090` are refused |
 | Agent exits with `registration failed after 3 attempts` | The control plane is not reachable. Start `bin/nova-control` and check `CONTROL_PLANE_URL` |
