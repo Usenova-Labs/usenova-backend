@@ -193,6 +193,45 @@ func (c *Client) authToken() string {
 	return c.agentToken
 }
 
+// FetchCommand asks the control plane for the next command queued for this
+// agent. It returns (nil, nil) when no command is pending.
+func (c *Client) FetchCommand(ctx context.Context) (*Command, error) {
+	c.mu.RLock()
+	agentID := c.agentID
+	c.mu.RUnlock()
+	if agentID == "" {
+		return nil, fmt.Errorf("agent not registered - no agent ID available")
+	}
+
+	endpoint := fmt.Sprintf("/api/v1/agents/%s/commands/next", agentID)
+
+	// The control plane answers with an empty body when nothing is pending,
+	// which leaves the command pointer nil.
+	var command *Command
+	if err := c.makeRequest(ctx, "GET", endpoint, nil, &command); err != nil {
+		return nil, fmt.Errorf("failed to fetch command: %w", err)
+	}
+
+	return command, nil
+}
+
+// ReportCommandResult reports the outcome of a command this agent executed.
+func (c *Client) ReportCommandResult(ctx context.Context, result CommandResult) error {
+	c.mu.RLock()
+	agentID := c.agentID
+	c.mu.RUnlock()
+	if agentID == "" {
+		return fmt.Errorf("agent not registered - no agent ID available")
+	}
+
+	endpoint := fmt.Sprintf("/api/v1/agents/%s/commands/%s/result", agentID, result.CommandID)
+	if err := c.makeRequest(ctx, "POST", endpoint, result, nil); err != nil {
+		return fmt.Errorf("failed to report command result: %w", err)
+	}
+
+	return nil
+}
+
 // makeRequest is a helper function to make HTTP requests to the control plane
 func (c *Client) makeRequest(ctx context.Context, method, endpoint string, request, response interface{}) error {
 	url := c.baseURL + endpoint
@@ -241,7 +280,7 @@ func (c *Client) makeRequest(ctx context.Context, method, endpoint string, reque
 	}
 
 	// Unmarshal successful response
-	if response != nil {
+	if response != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, response); err != nil {
 			return fmt.Errorf("failed to unmarshal response: %w", err)
 		}

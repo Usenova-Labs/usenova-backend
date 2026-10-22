@@ -341,3 +341,182 @@ func TestClient_Authentication(t *testing.T) {
 		t.Errorf("Expected 'success-agent', got %s", response.AgentID)
 	}
 }
+
+// TestClient_SessionTokenAfterRegister verifies the agent stores the token
+// issued at registration and sends it on later requests.
+func TestClient_SessionTokenAfterRegister(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	var registerAuth, commandAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		registerAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(RegisterResponse{
+			AgentID:      "agent-42",
+			SessionToken: "session-abc",
+		})
+	})
+	mux.HandleFunc("/api/v1/agents/agent-42/commands/next", func(w http.ResponseWriter, r *http.Request) {
+		commandAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Command{
+			ID:   "cmd-1",
+			Type: CommandTypeStop,
+		})
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClient(server.URL, "bootstrap-token", log)
+	ctx := context.Background()
+
+	if _, err := client.Register(ctx, "", "1.0.0"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := client.FetchCommand(ctx); err != nil {
+		t.Fatalf("fetch command: %v", err)
+	}
+
+	if registerAuth != "Bearer bootstrap-token" {
+		t.Errorf("register Authorization = %q, want bootstrap token", registerAuth)
+	}
+	if client.GetAgentID() != "agent-42" {
+		t.Errorf("agent ID = %q, want agent-42", client.GetAgentID())
+	}
+	if commandAuth != "Bearer session-abc" {
+		t.Errorf("command Authorization = %q, want session token", commandAuth)
+	}
+}
+
+// TestClient_FetchCommand verifies the agent asks the control plane for the
+// next command of its own queue.
+func TestClient_FetchCommand(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	var requestedPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(RegisterResponse{AgentID: "agent-7", SessionToken: "token"})
+	})
+	mux.HandleFunc("/api/v1/agents/agent-7/commands/next", func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Command{
+			ID:      "cmd-1",
+			Type:    CommandTypeDeploy,
+			Payload: json.RawMessage(`{"name":"api","image":"nginx"}`),
+		})
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClient(server.URL, "bootstrap-token", log)
+	ctx := context.Background()
+
+	if _, err := client.Register(ctx, "", "1.0.0"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	command, err := client.FetchCommand(ctx)
+	if err != nil {
+		t.Fatalf("fetch command: %v", err)
+	}
+	if command == nil {
+		t.Fatal("expected a command")
+	}
+	if command.ID != "cmd-1" || command.Type != CommandTypeDeploy {
+		t.Errorf("unexpected command: %+v", command)
+	}
+	if requestedPath != "/api/v1/agents/agent-7/commands/next" {
+		t.Errorf("unexpected path %q", requestedPath)
+	}
+}
+
+// TestClient_FetchCommandNoPending verifies that an empty response (204) means
+// "no command pending" and not an error.
+func TestClient_FetchCommandNoPending(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(RegisterResponse{AgentID: "agent-7", SessionToken: "token"})
+	})
+	mux.HandleFunc("/api/v1/agents/agent-7/commands/next", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClient(server.URL, "bootstrap-token", log)
+	ctx := context.Background()
+
+	if _, err := client.Register(ctx, "", "1.0.0"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	command, err := client.FetchCommand(ctx)
+	if err != nil {
+		t.Fatalf("fetch command: %v", err)
+	}
+	if command != nil {
+		t.Errorf("expected no command, got %+v", command)
+	}
+}
+
+// TestClient_ReportCommandResult verifies the outcome of a command is
+// reported back to the control plane.
+func TestClient_ReportCommandResult(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	var reported CommandResult
+	var reportedPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(RegisterResponse{AgentID: "agent-7", SessionToken: "token"})
+	})
+	mux.HandleFunc("/api/v1/agents/agent-7/commands/cmd-1/result", func(w http.ResponseWriter, r *http.Request) {
+		reportedPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&reported); err != nil {
+			t.Errorf("decode result: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClient(server.URL, "bootstrap-token", log)
+	ctx := context.Background()
+
+	if _, err := client.Register(ctx, "", "1.0.0"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	err := client.ReportCommandResult(ctx, CommandResult{
+		CommandID: "cmd-1",
+		Status:    CommandStatusSucceeded,
+		Message:   "service api deployed",
+	})
+	if err != nil {
+		t.Fatalf("report result: %v", err)
+	}
+
+	if reportedPath != "/api/v1/agents/agent-7/commands/cmd-1/result" {
+		t.Errorf("unexpected path %q", reportedPath)
+	}
+	if reported.Status != CommandStatusSucceeded || reported.CommandID != "cmd-1" {
+		t.Errorf("unexpected result: %+v", reported)
+	}
+}

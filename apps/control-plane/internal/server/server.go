@@ -13,11 +13,13 @@ import (
 type Server struct {
 	router         *gin.Engine
 	agentHandler   *agent.Handler
+	commandHandler *agent.CommandHandler
 	stellarHandler *stellarhandler.Handler
 	logger         *logrus.Logger
 }
 
 // NewServer creates a new HTTP server with all routes configured
+func NewServer(agentHandler *agent.Handler, commandHandler *agent.CommandHandler, logger *logrus.Logger) *Server {
 func NewServer(agentHandler *agent.Handler, stellarHandler *stellarhandler.Handler, logger *logrus.Logger) *Server {
 	router := gin.Default()
 
@@ -28,6 +30,7 @@ func NewServer(agentHandler *agent.Handler, stellarHandler *stellarhandler.Handl
 	s := &Server{
 		router:         router,
 		agentHandler:   agentHandler,
+		commandHandler: commandHandler,
 		stellarHandler: stellarHandler,
 		logger:         logger,
 	}
@@ -62,6 +65,16 @@ func (s *Server) setupRoutes() {
 			agents.GET("/:agentID", s.agentHandler.RequireAgentAuth(), s.agentHandler.GetAgent) // Bonus endpoint
 
 			agents.GET("", s.agentHandler.ListAgents) // Bonus endpoint
+		}
+
+		// Command channel: operators enqueue commands, agents claim and
+		// complete them. Agents poll, the control plane never dials out.
+		{
+			agents.POST("/:agentID/commands", s.commandHandler.RequireOperatorToken(), s.commandHandler.EnqueueCommand)
+			agents.GET("/:agentID/commands", s.commandHandler.RequireOperatorToken(), s.commandHandler.ListCommands)
+			agents.GET("/:agentID/commands/next", s.commandHandler.RequireAgentSession(), s.commandHandler.ClaimCommand)
+			agents.GET("/:agentID/commands/:commandID", s.commandHandler.RequireOperatorToken(), s.commandHandler.GetCommand)
+			agents.POST("/:agentID/commands/:commandID/result", s.commandHandler.RequireAgentSession(), s.commandHandler.CompleteCommand)
 		}
 
 		// TODO: Add other API groups

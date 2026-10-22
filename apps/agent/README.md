@@ -21,6 +21,7 @@ The agent is configured via environment variables:
 | `AGENT_TOKEN` | Yes | - | Authentication token |
 | `AGENT_ID` | No | auto-generated | Unique agent identifier |
 | `HEARTBEAT_INTERVAL` | No | `30s` | Heartbeat frequency |
+| `COMMAND_POLL_INTERVAL` | No | `10s` | How often the agent asks the Control Plane for pending commands |
 | `RESTART_MAX_RESTARTS` | No | `3` | Restarts allowed per window before a service is failed (`0` = unlimited) |
 | `RESTART_WINDOW` | No | `10m` | Sliding window over which restart attempts are counted |
 | `RESTART_BACKOFF` | No | `30s` | Base delay between restart attempts (doubles with every attempt, capped at 5m) |
@@ -155,6 +156,23 @@ unavailable.
 curl -N -H "Authorization: Bearer $API_TOKEN" \
   "http://127.0.0.1:9090/services/web/logs?tail=100&follow=true"
 ```
+
+## Control Plane Command Channel
+
+The agent polls the Control Plane for commands, executes them against the
+runtime manager and reports the outcome. The Control Plane never connects to
+the agent, so the agent keeps working behind NAT and firewalls and the local
+control API above stays loopback-only.
+
+| Command | Payload | Effect |
+| --- | --- | --- |
+| `deploy` | service spec (`name`, `image`, …) | Deploy a service |
+| `stop` | `{"name": "…"}` | Stop a running service |
+| `remove` | `{"name": "…"}` | Remove a service |
+
+The agent authenticates with the session token the Control Plane issues at
+registration. The design, the threat model and the planned evolution of the
+channel are documented in [docs/remote-deploy.md](../../docs/remote-deploy.md).
 
 ## Architecture
 
