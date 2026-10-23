@@ -1,6 +1,6 @@
 # PaymentEscrow Contract
 
-Minimal Soroban escrow lifecycle for BYOI/Usenova services. Funds are held by
+Minimal Soroban escrow lifecycle for Usenova services. Funds are held by
 the contract until the consumer releases them to the provider or refunds them.
 
 ## Lifecycle

@@ -2,7 +2,7 @@
 name = "payment-escrow"
 version = "0.1.0"
 edition = "2021"
-authors = ["BYOI Platform Contributors"]
+authors = ["Usenova Contributors"]
 license = "Apache-2.0"
 
 [lib]

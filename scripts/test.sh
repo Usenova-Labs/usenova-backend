@@ -2,9 +2,9 @@
 
 set -euo pipefail
 
-# Test script for BYOI Platform components
+# Test script for Usenova components
 
-echo "Running BYOI Platform tests..."
+echo "Running Usenova tests..."
 
 # Run Go tests
 echo "Running Go tests..."

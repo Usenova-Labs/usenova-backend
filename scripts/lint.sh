@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# Lint script for BYOI Platform components
+# Lint script for Usenova components
 
 echo "Running linters..."
 
