@@ -38,7 +38,7 @@ All values are optional and default to testnet. Set them in your environment
 | `STELLAR_RPC_URL` | Soroban RPC endpoint (escrow helpers) | `https://soroban-testnet.stellar.org` |
 | `STELLAR_DEFAULT_ASSET` | Asset used when a balance query omits one | `XLM` |
 | `PAYMENT_ESCROW_CONTRACT_ID` | Escrow contract id (optional) | (empty) |
-| `USENOVA_CONTROL_PLANE_URL` | Control plane URL used by the CLI | `http://127.0.0.1:8080` |
+| `NOVA_CONTROL_PLANE_URL` | Control plane URL used by the CLI (falls back to `USENOVA_CONTROL_PLANE_URL`) | `http://127.0.0.1:8080` |
 
 `STELLAR_NETWORK` selects the network; the URLs are derived from it unless you
 override them explicitly.
@@ -68,7 +68,7 @@ Start the control plane, then link the address with the CLI:
 ./bin/nova-control
 
 # terminal 2
-export USENOVA_CONTROL_PLANE_URL=http://127.0.0.1:8080
+export NOVA_CONTROL_PLANE_URL=http://127.0.0.1:8080
 ./bin/nova stellar link "$ADDRESS" --label payouts
 ./bin/nova stellar accounts
 ```

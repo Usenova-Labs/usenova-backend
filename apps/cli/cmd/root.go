@@ -26,9 +26,9 @@ func rootCmd() *cobra.Command {
 		Short:   "Nova CLI",
 		Version: "dev",
 	}
-	c.PersistentFlags().StringVar(&agentURL, "agent-url", getEnv("USENOVA_AGENT_URL", "http://127.0.0.1:9090"), "Agent local API URL")
-	c.PersistentFlags().StringVar(&controlPlaneURL, "control-plane-url", getEnv("USENOVA_CONTROL_PLANE_URL", "http://127.0.0.1:8080"), "Control plane API URL")
-	c.PersistentFlags().StringVar(&apiToken, "token", getEnv("USENOVA_API_TOKEN", ""), "Agent API token (Bearer)")
+	c.PersistentFlags().StringVar(&agentURL, "agent-url", getEnvMulti("NOVA_AGENT_URL", "USENOVA_AGENT_URL", "http://127.0.0.1:9090"), "Agent local API URL")
+	c.PersistentFlags().StringVar(&controlPlaneURL, "control-plane-url", getEnvMulti("NOVA_CONTROL_PLANE_URL", "USENOVA_CONTROL_PLANE_URL", "http://127.0.0.1:8080"), "Control plane API URL")
+	c.PersistentFlags().StringVar(&apiToken, "token", getEnvMulti("NOVA_API_TOKEN", "USENOVA_API_TOKEN", ""), "Agent API token (Bearer)")
 	c.PersistentFlags().StringVarP(&output, "output", "o", "text", "Output format (text|json)")
 	c.PersistentFlags().DurationVar(&timeout, "timeout", client.DefaultTimeout, "HTTP request timeout (a deploy that exceeds it is reconciled via service status)")
 	// Fail-soft early: an empty token only surfaces as a 401 from the agent
@@ -39,7 +39,7 @@ func rootCmd() *cobra.Command {
 			return nil
 		}
 		if apiToken == "" {
-			fmt.Fprintln(os.Stderr, "warning: no API token configured (--token or USENOVA_API_TOKEN); the agent requires a bearer token and will reject requests")
+			fmt.Fprintln(os.Stderr, "warning: no API token configured (--token, NOVA_API_TOKEN, or USENOVA_API_TOKEN); the agent requires a bearer token and will reject requests")
 		}
 		return nil
 	}
@@ -62,11 +62,16 @@ func Root() *cobra.Command {
 	return rootCmd()
 }
 
-func getEnv(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
+// getEnvMulti returns the first non-empty environment variable in names, or
+// def when none are set. The lookup order encodes the preference:
+// NOVA_* before USENOVA_* before the default.
+func getEnvMulti(names ...string) string {
+	for _, n := range names {
+		if v := os.Getenv(n); v != "" {
+			return v
+		}
 	}
-	return def
+	return names[len(names)-1]
 }
 
 func newClient() (*client.Client, error) {

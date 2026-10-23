@@ -342,9 +342,9 @@ func TestClient_Authentication(t *testing.T) {
 	}
 }
 
-// TestClient_SessionTokenAfterRegister verifies the agent stores the token
-// issued at registration and sends it on later requests.
-func TestClient_SessionTokenAfterRegister(t *testing.T) {
+// TestClient_SessionTokenOnCommandFetch verifies the agent sends the session
+// token (not the bootstrap token) when fetching commands after registration.
+func TestClient_SessionTokenOnCommandFetch(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
 

@@ -19,8 +19,7 @@ type Server struct {
 }
 
 // NewServer creates a new HTTP server with all routes configured
-func NewServer(agentHandler *agent.Handler, commandHandler *agent.CommandHandler, logger *logrus.Logger) *Server {
-func NewServer(agentHandler *agent.Handler, stellarHandler *stellarhandler.Handler, logger *logrus.Logger) *Server {
+func NewServer(agentHandler *agent.Handler, commandHandler *agent.CommandHandler, stellarHandler *stellarhandler.Handler, logger *logrus.Logger) *Server {
 	router := gin.Default()
 
 	// Set up middleware

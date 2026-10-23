@@ -65,8 +65,6 @@ func main() {
 	commandQueue := agent.NewCommandQueue(agent.DefaultMaxCommandDepth, agent.DefaultCommandLease)
 	commandHandler := agent.NewCommandHandler(agentStore, commandQueue, operatorToken, log)
 
-	// Setup HTTP server with all routes
-	srv := server.NewServer(agentHandler, commandHandler, log)
 	// Initialize Stellar account linking (env-driven; no keys stored).
 	stCfg, err := stellarhandler.Load()
 	if err != nil {
@@ -78,7 +76,7 @@ func main() {
 	stellarHandler := stellarhandler.NewHandler(stStore, stClient, stCfg.Stellar.Network, log)
 
 	// Setup HTTP server with all routes
-	srv := server.NewServer(agentHandler, stellarHandler, log)
+	srv := server.NewServer(agentHandler, commandHandler, stellarHandler, log)
 
 	httpServer := &http.Server{
 		Addr:    ":8080",

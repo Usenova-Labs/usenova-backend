@@ -20,9 +20,9 @@ Or build everything from the repo root:
 
 | Setting | Flag | Environment variable | Default |
 | --- | --- | --- | --- |
-| Agent API URL | `--agent-url` | `USENOVA_AGENT_URL` | `http://127.0.0.1:9090` |
-| Control plane URL | `--control-plane-url` | `USENOVA_CONTROL_PLANE_URL` | `http://127.0.0.1:8080` |
-| Bearer token | `--token` | `USENOVA_API_TOKEN` | (empty) |
+| Agent API URL | `--agent-url` | `NOVA_AGENT_URL` (falls back to `USENOVA_AGENT_URL`) | `http://127.0.0.1:9090` |
+| Control plane URL | `--control-plane-url` | `NOVA_CONTROL_PLANE_URL` (falls back to `USENOVA_CONTROL_PLANE_URL`) | `http://127.0.0.1:8080` |
+| Bearer token | `--token` | `NOVA_API_TOKEN` (falls back to `USENOVA_API_TOKEN`) | (empty) |
 | Output format | `-o, --output` | — | `text` |
 | Request timeout | `--timeout` | — | `2m` |
 
@@ -116,7 +116,7 @@ nova stellar unlink GBRP...
 ```
 
 Point the CLI at a control plane with `--control-plane-url` or
-`USENOVA_CONTROL_PLANE_URL`. See [docs/stellar-testnet.md](../../docs/stellar-testnet.md)
+`NOVA_CONTROL_PLANE_URL` (or the legacy `USENOVA_CONTROL_PLANE_URL`). See [docs/stellar-testnet.md](../../docs/stellar-testnet.md)
 for testnet setup.
 
 ## Follow-ups
