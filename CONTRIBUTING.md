@@ -1,6 +1,7 @@
-# Contributing to BYOI Platform
+# Contributing to Usenova
 
-Thank you for considering contributing to BYOI Platform! This document provides guidelines and instructions for contributing to the project.
+Thank you for considering contributing to Usenova! This document provides guidelines
+and instructions for contributing to the project.
 
 ## Code of Conduct
 
@@ -12,16 +13,16 @@ Be respectful, inclusive, and constructive in all interactions. We're building t
 
 - **Go**: Version 1.21 or higher
 - **Rust**: Latest stable (for Soroban contracts)
-- **Stellar CLI**: For smart contract development
-- **Docker**: For local testing (optional)
+- **Stellar CLI**: For smart contract development (`cargo install --locked soroban-cli`)
+- **Docker**: For local testing (the agent manages Docker containers)
 - **Git**: For version control
 
 ### Development Setup
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/byoi-platform.git
-   cd byoi-platform
+   git clone https://github.com/Usenova-Labs/usenova-backend.git
+   cd usenova-backend
    ```
 
 2. **Install Go dependencies**
@@ -40,39 +41,53 @@ Be respectful, inclusive, and constructive in all interactions. We're building t
 
 4. **Run tests**
    ```bash
-   # Go tests
-   go test ./...
-   
-   # Rust tests
+   # All Go tests (CLI, agent, control plane, shared packages)
+   ./scripts/test.sh
+
+   # Or per module
+   cd apps/cli && go test -race ./...
+   cd apps/agent && go test -race ./...
+   cd apps/control-plane && go test -race ./...
+   cd packages/stellar && go test -race ./...
+
+   # Rust / Soroban contract tests
    cd contracts && cargo test
    ```
 
 5. **Build binaries**
    ```bash
-   # CLI
-   cd apps/cli && go build -o ../../bin/nova
-   
-   # Agent
-   cd apps/agent && go build -o ../../bin/usenova-agent
-   
-   # Control Plane
-   cd apps/control-plane && go build -o ../../bin/nova-control
+   ./scripts/build.sh
+   # Or individually:
+   (cd apps/cli && go build -o ../../bin/nova)
+   (cd apps/agent && go build -o ../../bin/usenova-agent)
+   (cd apps/control-plane && go build -o ../../bin/nova-control)
+   ```
+
+6. **Run the local stack**
+
+   See [docs/getting-started.md](docs/getting-started.md) for a step-by-step walkthrough,
+   or run the automated smoke test:
+
+   ```bash
+   ./scripts/e2e-smoke.sh
    ```
 
 ## Development Workflow
 
 ### Branching Strategy
 
-- `main`: Stable, production-ready code
-- `develop`: Integration branch for features (if needed)
+- **`develop`** is the default integration branch. Branch from `develop` and PR into `develop`.
 - `feature/*`: New features
 - `fix/*`: Bug fixes
 - `docs/*`: Documentation updates
+- `chore/*`: Maintenance tasks
 
 ### Making Changes
 
-1. **Create a branch**
+1. **Create a branch from `develop`**
    ```bash
+   git checkout develop
+   git pull origin develop
    git checkout -b feature/your-feature-name
    ```
 
@@ -87,23 +102,23 @@ Be respectful, inclusive, and constructive in all interactions. We're building t
    # Format Go code
    gofmt -w .
    goimports -w .
-   
+
    # Run Go tests
-   go test ./...
-   
+   go test -race ./...
+
    # Format Rust code
    cd contracts && cargo fmt
-   
+
    # Run Rust tests
    cargo test
    ```
 
 4. **Commit your changes**
    ```bash
-   git add .
+   git add <specific-files>
    git commit -m "feat: add new feature"
    ```
-   
+
    Use conventional commits:
    - `feat:` New feature
    - `fix:` Bug fix
@@ -112,15 +127,42 @@ Be respectful, inclusive, and constructive in all interactions. We're building t
    - `test:` Adding or updating tests
    - `chore:` Maintenance tasks
 
-5. **Push and create a pull request**
+5. **Push and create a pull request into `develop`**
    ```bash
-   git push origin feature/your-feature-name
+   git push -u origin feature/your-feature-name
    ```
-   
+
    Then create a PR on GitHub with:
    - Clear description of changes
    - Link to related issues
    - Screenshots/examples if applicable
+
+## Issue Labels
+
+| Label | Meaning |
+| --- | --- |
+| `good first issue` | Scoped, beginner-friendly — ideal for first PRs |
+| `stellar` | Stellar network / Soroban contract work |
+| `agent` | Agent daemon (`apps/agent`) |
+| `control-plane` | Control plane server (`apps/control-plane`) |
+| `cli` | Nova CLI (`apps/cli`) |
+| `docs` | Documentation |
+| `mvp` | Core MVP scope |
+| `reliability` | Reliability / circuit breaker / restart logic |
+| `security` | Security-related |
+
+## Stellar Wave Contributors
+
+Usenova participates in the [Stellar Wave Program on Drips](https://docs.drips.network/wave/).
+If you are a Wave contributor:
+
+1. **Only work issues you are assigned** via Drips or GitHub. Open a comment on the issue
+   asking to be assigned before starting.
+2. **Open a PR** linking the issue (`Closes #NN`) once your work is ready for review.
+3. **Keep the PR scope tight** — one issue per PR unless explicitly agreed otherwise.
+
+Wave is a community program. It does not imply SDF endorsement of this project, and the
+Wave reward is compensation for your contribution, not a grant to the project.
 
 ## Code Style Guidelines
 
@@ -134,18 +176,6 @@ Be respectful, inclusive, and constructive in all interactions. We're building t
 - Use table-driven tests where appropriate
 - Handle errors explicitly, don't ignore them
 
-**Example:**
-```go
-// ProcessPayment handles payment through Stellar network
-func ProcessPayment(ctx context.Context, amount int64) error {
-    if amount <= 0 {
-        return fmt.Errorf("invalid amount: %d", amount)
-    }
-    // Implementation
-    return nil
-}
-```
-
 ### Rust (Soroban Contracts)
 
 - Follow Rust standard style (`cargo fmt`)
@@ -154,18 +184,6 @@ func ProcessPayment(ctx context.Context, amount int64) error {
 - Write comprehensive tests for contract functions
 - Document contract interfaces thoroughly
 - Keep contracts simple and auditable
-
-**Example:**
-```rust
-/// Processes an escrow payment between parties
-pub fn process_escrow(env: Env, amount: i128, recipient: Address) -> Result<(), Error> {
-    if amount <= 0 {
-        return Err(Error::InvalidAmount);
-    }
-    // Implementation
-    Ok(())
-}
-```
 
 ## Testing
 
@@ -185,10 +203,10 @@ pub fn process_escrow(env: Env, amount: i128, recipient: Address) -> Result<(), 
 ## Pull Request Process
 
 1. **Before submitting:**
-   - Ensure all tests pass
+   - Ensure all tests pass (`./scripts/test.sh`)
    - Run linters and formatters
    - Update documentation
-   - Rebase on latest `main` if needed
+   - Rebase on latest `develop` if needed
 
 2. **PR requirements:**
    - Clear, descriptive title
@@ -205,23 +223,22 @@ pub fn process_escrow(env: Env, amount: i128, recipient: Address) -> Result<(), 
    - Squash commits if there are many small fixup commits
    - Maintainers will merge when approved and CI passes
 
-## Project Status Note
+## Project Status
 
-BYOI Platform is currently in **early MVP stage**. This means:
+Usenova is in active development. The BYOI (Bring Your Own Infrastructure) path works end
+to end today: CLI, agent, control plane, Docker deploys, health checks, circuit breaker,
+remote deploy command channel, Stellar testnet linking, and Soroban payment escrow.
 
-- Architecture and APIs may change significantly
-- Not all features are implemented yet
-- Breaking changes may occur between versions
-- We're especially open to feedback on design decisions
-
-Your patience and contributions during this phase are greatly appreciated!
+Architecture and APIs may change as the project evolves. Breaking changes may occur
+between versions. We're especially open to feedback on design decisions.
 
 ## Questions or Need Help?
 
-- Open a [GitHub Discussion](https://github.com/yourusername/byoi-platform/discussions)
+- Open a [GitHub Discussion](https://github.com/Usenova-Labs/usenova-backend/discussions)
 - Check existing issues and PRs
 - Reach out to maintainers in discussions
 
 ## Recognition
 
-Contributors will be recognized in release notes and the project README. Thank you for helping build BYOI Platform!
+Contributors will be recognized in release notes and the project README. Thank you for
+helping build Usenova!

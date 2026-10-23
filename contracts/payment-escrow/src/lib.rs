@@ -2,7 +2,7 @@
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env};
 
-/// PaymentEscrow contract handles secure payment escrow for BYOI services
+/// PaymentEscrow contract handles secure payment escrow for Usenova services
 ///
 /// This contract manages payments between service consumers and providers,
 /// ensuring funds are held securely until service delivery is confirmed.

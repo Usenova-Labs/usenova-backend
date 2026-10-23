@@ -1,10 +1,12 @@
-# BYOI Platform Architecture
+# Usenova Architecture
 
-> This document describes the high-level architecture of the BYOI Platform
+> This document describes the high-level architecture of Usenova
 
 ## Overview
 
-The BYOI Platform enables users to deploy and manage always-on backend services on their own infrastructure while facilitating payments through the Stellar blockchain. The system is designed for simplicity, security, and future extensibility into a compute marketplace.
+Usenova enables users to deploy and manage always-on backend services on their own
+infrastructure while facilitating payments through the Stellar blockchain. The system is
+designed for simplicity, security, and future extensibility into a compute marketplace.
 
 ## Core Principles
 

@@ -1,6 +1,6 @@
 package shared
 
-// Common types and utilities shared across BYOI Platform components
+// Common types and utilities shared across Usenova components
 
 // ServiceStatus represents the current state of a service
 type ServiceStatus string

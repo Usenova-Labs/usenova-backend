@@ -2,13 +2,13 @@
 
 set -euo pipefail
 
-# Build script for BYOI Platform components
+# Build script for Usenova components
 
 VERSION="${VERSION:-dev}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")}"
 BUILD_DIR="bin"
 
-echo "Building BYOI Platform..."
+echo "Building Usenova..."
 echo "Version: $VERSION"
 echo "Commit: $COMMIT"
 
