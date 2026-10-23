@@ -114,30 +114,13 @@ func (c *Client) RPCURL() string { return c.rpcURL }
 // ContractID returns the configured escrow contract id (may be empty).
 func (c *Client) ContractID() string { return c.contractID }
 
-// WithHTTPClient overrides the underlying HTTP client (used in tests).
-	rpcURL     string
-	httpClient *http.Client
-}
-
-// NewClient creates a new Stellar client targeting the given network and
-// Soroban contract. The RPC endpoint is derived from the network name unless
-// overridden with WithRPCURL.
-func NewClient(network, contractID string) *Client {
-	return &Client{
-		network:    network,
-		contractID: contractID,
-		rpcURL:     defaultRPCURL(network),
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-	}
-}
-
 // WithRPCURL overrides the Soroban RPC endpoint used by the client.
 func (c *Client) WithRPCURL(url string) *Client {
 	c.rpcURL = url
 	return c
 }
 
-// WithHTTPClient overrides the underlying HTTP client.
+// WithHTTPClient overrides the underlying HTTP client (used in tests).
 func (c *Client) WithHTTPClient(hc *http.Client) *Client {
 	c.httpClient = hc
 	return c
@@ -272,14 +255,6 @@ func ValidateAccountID(address string) error {
 		}
 	}
 	return nil
-// ContractID returns the configured escrow contract id.
-func (c *Client) ContractID() string {
-	return c.contractID
-}
-
-// Network returns the configured network name.
-func (c *Client) Network() string {
-	return c.network
 }
 
 func defaultRPCURL(network string) string {
@@ -378,31 +353,6 @@ func (c *Client) ProcessPayment(ctx context.Context, amount int64, recipient str
 		Amount:   amount,
 	})
 	return err
-}
-
-// GetBalance retrieves the native balance for an account from Soroban RPC.
-func (c *Client) GetBalance(ctx context.Context, address string) (int64, error) {
-	result, err := c.call(ctx, "getAccount", map[string]interface{}{"accountId": address})
-	if err != nil {
-		return 0, err
-	}
-
-	var account struct {
-		Balances []struct {
-			Balance string `json:"balance"`
-		} `json:"balances"`
-	}
-	if err := json.Unmarshal(result, &account); err != nil {
-		return 0, fmt.Errorf("stellar: decode account: %w", err)
-	}
-	if len(account.Balances) == 0 {
-		return 0, nil
-	}
-	var stroops int64
-	if _, err := fmt.Sscanf(account.Balances[0].Balance, "%d", &stroops); err != nil {
-		return 0, fmt.Errorf("stellar: parse balance: %w", err)
-	}
-	return stroops, nil
 }
 
 // InvokeContract invokes a Soroban smart contract function via simulateTransaction.

@@ -43,6 +43,7 @@ func TestGetEnvMulti(t *testing.T) {
 	})
 
 	t.Run("falls back to second name", func(t *testing.T) {
+		clearEnv(t)
 		t.Setenv("USENOVA_AGENT_URL", "http://usenova:9090")
 		got := getEnvMulti("NOVA_AGENT_URL", "USENOVA_AGENT_URL", "http://default:9090")
 		if got != "http://usenova:9090" {

@@ -62,13 +62,6 @@ func Root() *cobra.Command {
 	return rootCmd()
 }
 
-func getEnv(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
-
 // getEnvMulti returns the first non-empty environment variable in names, or
 // def when none are set. The lookup order encodes the preference:
 // NOVA_* before USENOVA_* before the default.

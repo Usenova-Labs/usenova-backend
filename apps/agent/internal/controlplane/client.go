@@ -31,6 +31,7 @@ type SystemInfoDetector func(ctx context.Context) AgentSystemInfo
 // DockerVersionDetector reports the version of the Docker engine available on
 // the host. It returns an empty string when the version is unknown.
 type DockerVersionDetector func(ctx context.Context) string
+
 // FailedServicesCounter reports how many services the agent gave up on
 // (they exhausted their restart budget or their deploy failed).
 type FailedServicesCounter func() int
@@ -171,11 +172,11 @@ func (c *Client) SendHeartbeat(ctx context.Context) error {
 	}
 
 	c.log.WithFields(logrus.Fields{
-		"agent_id": agentID,
-		"uptime":   status.Uptime.Round(time.Second),
-		"services": status.RunningServices,
-		"failed":   status.FailedServices,
-		"status":   response.Status,
+		"agent_id":       agentID,
+		"uptime":         status.Uptime.Round(time.Second),
+		"services":       status.RunningServices,
+		"failed":         status.FailedServices,
+		"status":         response.Status,
 		"docker_version": system.DockerVersion,
 	}).Debug("Heartbeat sent successfully")
 

@@ -27,8 +27,11 @@ func TestDefaultRPCURL(t *testing.T) {
 func newTestServer(t *testing.T, handler http.HandlerFunc) (*Client, func()) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
-	client := NewClient("testnet", "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM").
-		WithRPCURL(srv.URL)
+	client := NewClient(Config{
+		Network:    "testnet",
+		ContractID: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+		RPCURL:     srv.URL,
+	})
 	return client, srv.Close
 }
 
@@ -139,24 +142,5 @@ func TestRPCErrorPropagates(t *testing.T) {
 	_, err := client.InvokeContract(context.Background(), "release", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGetBalance(t *testing.T) {
-	client, closeSrv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(rpcResponse{
-			JSONRPC: "2.0",
-			ID:      1,
-			Result:  json.RawMessage(`{"balances":[{"balance":"10000000"}]}`),
-		})
-	})
-	defer closeSrv()
-
-	bal, err := client.GetBalance(context.Background(), "GAAAA")
-	if err != nil {
-		t.Fatalf("GetBalance: %v", err)
-	}
-	if bal != 10000000 {
-		t.Errorf("balance = %d, want 10000000", bal)
 	}
 }

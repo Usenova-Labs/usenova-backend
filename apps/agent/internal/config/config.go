@@ -107,6 +107,8 @@ func Load(version string) (*Config, error) {
 
 	if config.CommandPollInterval < time.Second {
 		return nil, fmt.Errorf("COMMAND_POLL_INTERVAL must be at least 1 second")
+	}
+
 	// Optional: restart limits (defaults: 3 restarts per 10m window, 30s
 	// backoff). They keep a crash-looping service from being restarted
 	// forever.

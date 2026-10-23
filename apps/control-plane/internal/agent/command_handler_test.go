@@ -40,7 +40,11 @@ func testCommandRouter(t *testing.T) (*gin.Engine, *AgentStore, *CommandQueue) {
 func registerTestAgent(t *testing.T, store *AgentStore, agentID string) string {
 	t.Helper()
 
-	a, err := store.RegisterAgent(agentID, "host-1", "1.0.0", AgentCapabilities{})
+	a, err := store.RegisterAgent(AgentRegistration{
+		AgentID:  agentID,
+		Hostname: "host-1",
+		Version:  "1.0.0",
+	})
 	if err != nil {
 		t.Fatalf("register agent: %v", err)
 	}
