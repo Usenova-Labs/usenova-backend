@@ -69,6 +69,7 @@ type AgentStatus struct {
 type AgentStore struct {
 	mu     sync.RWMutex
 	agents map[string]*Agent
+	tokens map[string]string
 	db     *sql.DB
 }
 
@@ -76,6 +77,7 @@ type AgentStore struct {
 func NewAgentStore() *AgentStore {
 	return &AgentStore{
 		agents: make(map[string]*Agent),
+		tokens: make(map[string]string),
 	}
 }
 
@@ -99,6 +101,7 @@ type AgentRegistration struct {
 func NewPersistentAgentStore(db *sql.DB) (*AgentStore, error) {
 	s := &AgentStore{
 		agents: make(map[string]*Agent),
+		tokens: make(map[string]string),
 		db:     db,
 	}
 
@@ -148,7 +151,7 @@ func (s *AgentStore) load() error {
 			return fmt.Errorf("parse capabilities for agent %q: %w", agentID, err)
 		}
 
-		s.agents[agentID] = &Agent{
+		agent := &Agent{
 			AgentID:          agentID,
 			Hostname:         hostname,
 			Version:          version,
@@ -157,12 +160,15 @@ func (s *AgentStore) load() error {
 			RegistrationTime: registrationTime,
 			SessionToken:     sessionToken,
 		}
+		s.agents[agentID] = agent
+		if sessionToken != "" {
+			s.tokens[sessionToken] = agentID
+		}
 	}
 
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate persisted agents: %w", err)
 	}
-	return nil
 	return nil
 }
 
@@ -206,7 +212,13 @@ func (s *AgentStore) RegisterAgent(reg AgentRegistration) (*Agent, error) {
 		}
 	}
 
+	if prev, ok := s.agents[agentID]; ok && prev.SessionToken != "" {
+		delete(s.tokens, prev.SessionToken)
+	}
 	s.agents[agentID] = agent
+	if agent.SessionToken != "" {
+		s.tokens[agent.SessionToken] = agentID
+	}
 	return agent, nil
 }
 
@@ -312,10 +324,11 @@ func (s *AgentStore) UpdateSystemInfo(agentID string, system AgentSystemInfo) er
 }
 
 // ValidateSessionToken reports whether token is the current session token for
-// the given agent. It returns ErrAgentNotFound when the agent is unknown and
-// ErrInvalidToken when the token does not match, so callers can distinguish the
-// two cases. Comparison is constant-time to avoid leaking token bytes through
-// timing.
+// the given agent. It returns ErrAgentNotFound when the agent is unknown,
+// ErrTokenForOtherAgent when the token is valid but was issued to a different
+// agent, and ErrInvalidToken when the token does not belong to any agent, so
+// callers can distinguish the cases. Comparisons are constant-time to avoid
+// leaking token bytes through timing.
 func (s *AgentStore) ValidateSessionToken(agentID, token string) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -324,10 +337,14 @@ func (s *AgentStore) ValidateSessionToken(agentID, token string) error {
 	if !exists {
 		return ErrAgentNotFound
 	}
-	if token == "" || subtle.ConstantTimeCompare([]byte(agent.SessionToken), []byte(token)) != 1 {
-		return ErrInvalidToken
+	if token != "" && subtle.ConstantTimeCompare([]byte(agent.SessionToken), []byte(token)) == 1 {
+		return nil
 	}
-	return nil
+
+	if ownerID, ok := s.tokens[token]; ok && ownerID != agentID {
+		return ErrTokenForOtherAgent
+	}
+	return ErrInvalidToken
 }
 
 // GetAgent retrieves an agent by ID
@@ -361,7 +378,8 @@ func (s *AgentStore) DeleteAgent(agentID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.agents[agentID]; !exists {
+	agent, exists := s.agents[agentID]
+	if !exists {
 		return ErrAgentNotFound
 	}
 
@@ -371,6 +389,9 @@ func (s *AgentStore) DeleteAgent(agentID string) error {
 		}
 	}
 
+	if agent.SessionToken != "" {
+		delete(s.tokens, agent.SessionToken)
+	}
 	delete(s.agents, agentID)
 	return nil
 }
@@ -378,9 +399,12 @@ func (s *AgentStore) DeleteAgent(agentID string) error {
 // Errors
 var (
 	ErrAgentNotFound = &AgentError{"agent not found"}
-	// ErrInvalidToken is returned when a supplied session token does not match
-	// the one issued at registration.
+	// ErrInvalidToken is returned when a supplied session token does not belong
+	// to any registered agent.
 	ErrInvalidToken = &AgentError{"invalid session token"}
+	// ErrTokenForOtherAgent is returned when a valid session token is presented
+	// for an agent other than the one it was issued to.
+	ErrTokenForOtherAgent = &AgentError{"session token does not match agent"}
 )
 
 // AgentError represents agent-related errors

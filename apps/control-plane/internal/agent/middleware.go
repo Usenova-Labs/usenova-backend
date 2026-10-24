@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -34,9 +35,21 @@ func (h *Handler) RequireAgentAuth() gin.HandlerFunc {
 				"agent_id": agentID,
 				"error":    err.Error(),
 			}).Warn("Rejected agent request with invalid session token")
-			c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
-				Error: "Invalid session token",
-			})
+
+			switch {
+			case errors.Is(err, ErrAgentNotFound):
+				c.AbortWithStatusJSON(http.StatusNotFound, ErrorResponse{
+					Error: "agent not found",
+				})
+			case errors.Is(err, ErrTokenForOtherAgent):
+				c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
+					Error: "session token does not match agent",
+				})
+			default:
+				c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
+					Error: "invalid session token",
+				})
+			}
 			return
 		}
 
