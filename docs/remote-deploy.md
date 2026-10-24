@@ -121,6 +121,119 @@ The queue is bounded: an agent keeps at most 32 command records. Finished
 commands are pruned when new ones arrive, and a full queue is reported back to
 the operator as `429` instead of growing without bound.
 
+### Architecture overview
+
+```mermaid
+graph LR
+    OP[Operator<br/>CLI / dashboard / automation]
+    CP[CP<br/>control plane]
+    Q[(Command queue<br/>per agent)]
+    AG[Agent]
+    RM[Runtime manager<br/>Docker]
+
+    OP -- "POST /commands<br/>(operator token)" --> CP
+    CP -- enqueue --> Q
+    AG -- "GET /commands/next<br/>(session token, poll)" --> CP
+    CP -- "claim + lease" --> Q
+    AG -- execute --> RM
+    RM -- result --> AG
+    AG -- "POST /commands/:id/result<br/>(session token)" --> CP
+    CP -- record --> Q
+    OP -- "GET /commands/:id<br/>(operator token)" --> CP
+```
+
+The agent always dials out to the CP. The CP never opens a connection to the
+agent, so the agent keeps working behind NAT and firewalls with no inbound
+ports required.
+
+### Happy path — sequence diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant OP as Operator
+    participant CP as CP
+    participant AG as Agent
+    participant RM as Runtime manager
+
+    OP->>CP: POST /agents/:id/commands (operator token)
+    CP-->>OP: 202 Accepted {commandID, status: pending}
+
+    loop every poll interval
+        AG->>CP: GET /agents/:id/commands/next (session token)
+        CP-->>AG: 204 No Content (nothing pending)
+    end
+
+    Note over CP,AG: command now in queue
+
+    AG->>CP: GET /agents/:id/commands/next (session token)
+    CP-->>AG: 200 OK {commandID, type: deploy, payload}
+    Note over CP: status → running, lease started
+
+    AG->>RM: execute deploy(payload)
+    RM-->>AG: container started
+
+    AG->>CP: POST /agents/:id/commands/:commandID/result {status: succeeded}
+    CP-->>AG: 200 OK
+    Note over CP: status → succeeded
+
+    OP->>CP: GET /agents/:id/commands/:commandID (operator token)
+    CP-->>OP: 200 OK {status: succeeded}
+```
+
+### Failure path — agent dies after claim, lease expires, re-delivery
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant OP as Operator
+    participant CP as CP
+    participant AG as Agent
+    participant RM as Runtime manager
+
+    OP->>CP: POST /agents/:id/commands (operator token)
+    CP-->>OP: 202 Accepted {commandID, status: pending}
+
+    AG->>CP: GET /agents/:id/commands/next (session token)
+    CP-->>AG: 200 OK {commandID, type: deploy, payload}
+    Note over CP: status → running, lease started
+
+    AG->>RM: execute deploy(payload)
+    Note over AG: agent crashes / network lost<br/>before reporting result
+
+    Note over CP: lease expires (no result received)
+    Note over CP: status → pending (re-queued)
+
+    AG->>CP: GET /agents/:id/commands/next (session token)
+    Note over AG: agent restarts and polls again
+
+    CP-->>AG: 200 OK {same commandID, payload}
+    Note over CP: status → running, new lease
+
+    AG->>RM: execute deploy(payload)
+    Note over RM: deploy is idempotent — safe to re-run
+
+    RM-->>AG: container started
+
+    AG->>CP: POST /agents/:id/commands/:commandID/result {status: succeeded}
+    CP-->>AG: 200 OK
+    Note over CP: status → succeeded (terminal)
+
+    OP->>CP: GET /agents/:id/commands/:commandID (operator token)
+    CP-->>OP: 200 OK {status: succeeded}
+```
+
+**Key properties shown above:**
+
+- **At-least-once delivery** — the lease timeout causes re-delivery if the
+  agent dies between claim and result.
+- **Idempotency** — `deploy`, `stop`, and `remove` are safe to re-run; the
+  runtime manager tolerates duplicate commands at the service level.
+- **Same command ID** — the re-delivered command keeps its original ID, so a
+  duplicate execution is visible in the audit trail.
+- **Terminal once succeeded** — a command that has already reached `succeeded`
+  or `failed` will not be handed out again even if a duplicate result arrives.
+
 ## API
 
 Operator-facing (requires the operator token):
