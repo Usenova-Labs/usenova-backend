@@ -46,8 +46,62 @@ func New(baseURL, token string, timeout time.Duration) (*Client, error) {
 		token:   token,
 		http: &http.Client{
 			Timeout: timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) == 0 {
+					return nil
+				}
+				if len(via) > 10 {
+					return http.ErrUseLastResponse
+				}
+				// Check if any request in the chain has Authorization
+				for _, v := range via {
+					if v.Header.Get("Authorization") != "" {
+						// Reject if redirecting to HTTP
+						if strings.EqualFold(req.URL.Scheme, "http") {
+							// Reject HTTPS->HTTP downgrade
+							for _, vv := range via {
+								if strings.EqualFold(vv.URL.Scheme, "https") {
+									return fmt.Errorf("refusing to follow token-bearing redirect from HTTPS to HTTP")
+								}
+							}
+							// Reject remote HTTP
+							if !isLoopbackHost(req.URL.Hostname()) {
+								return fmt.Errorf("refusing to follow token-bearing redirect to plaintext HTTP")
+							}
+							// Also reject in general for same-host HTTP downgrade
+							return fmt.Errorf("refusing to follow token-bearing redirect to plaintext HTTP")
+						}
+					}
+				}
+				return nil
+			},
 		},
-		stream: &http.Client{},
+		stream: &http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) == 0 {
+					return nil
+				}
+				if len(via) > 10 {
+					return http.ErrUseLastResponse
+				}
+				for _, v := range via {
+					if v.Header.Get("Authorization") != "" {
+						if strings.EqualFold(req.URL.Scheme, "http") {
+							for _, vv := range via {
+								if strings.EqualFold(vv.URL.Scheme, "https") {
+									return fmt.Errorf("refusing to follow token-bearing redirect from HTTPS to HTTP")
+								}
+							}
+							if !isLoopbackHost(req.URL.Hostname()) {
+								return fmt.Errorf("refusing to follow token-bearing redirect to plaintext HTTP")
+							}
+							return fmt.Errorf("refusing to follow token-bearing redirect to plaintext HTTP")
+						}
+					}
+				}
+				return nil
+			},
+		},
 	}, nil
 }
 
