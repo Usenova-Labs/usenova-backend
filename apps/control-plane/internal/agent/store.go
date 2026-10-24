@@ -163,7 +163,6 @@ func (s *AgentStore) load() error {
 		return fmt.Errorf("iterate persisted agents: %w", err)
 	}
 	return nil
-	return nil
 }
 
 // RegisterAgent registers or updates an agent
@@ -312,10 +311,11 @@ func (s *AgentStore) UpdateSystemInfo(agentID string, system AgentSystemInfo) er
 }
 
 // ValidateSessionToken reports whether token is the current session token for
-// the given agent. It returns ErrAgentNotFound when the agent is unknown and
-// ErrInvalidToken when the token does not match, so callers can distinguish the
-// two cases. Comparison is constant-time to avoid leaking token bytes through
-// timing.
+// the given agent. It returns ErrAgentNotFound when the agent is unknown,
+// ErrTokenForOtherAgent when the token is valid but was issued to a different
+// agent, and ErrInvalidToken when the token does not belong to any agent, so
+// callers can distinguish the cases. Comparisons are constant-time to avoid
+// leaking token bytes through timing.
 func (s *AgentStore) ValidateSessionToken(agentID, token string) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -325,9 +325,29 @@ func (s *AgentStore) ValidateSessionToken(agentID, token string) error {
 		return ErrAgentNotFound
 	}
 	if token == "" || subtle.ConstantTimeCompare([]byte(agent.SessionToken), []byte(token)) != 1 {
+		if s.tokenBelongsToOtherAgent(agentID, token) {
+			return ErrTokenForOtherAgent
+		}
 		return ErrInvalidToken
 	}
 	return nil
+}
+
+// tokenBelongsToOtherAgent reports whether token is the session token of any
+// agent other than exceptID. The caller must hold at least a read lock.
+func (s *AgentStore) tokenBelongsToOtherAgent(exceptID, token string) bool {
+	if token == "" {
+		return false
+	}
+	for agentID, agent := range s.agents {
+		if agentID == exceptID {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(agent.SessionToken), []byte(token)) == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // GetAgent retrieves an agent by ID
@@ -378,9 +398,12 @@ func (s *AgentStore) DeleteAgent(agentID string) error {
 // Errors
 var (
 	ErrAgentNotFound = &AgentError{"agent not found"}
-	// ErrInvalidToken is returned when a supplied session token does not match
-	// the one issued at registration.
+	// ErrInvalidToken is returned when a supplied session token does not belong
+	// to any registered agent.
 	ErrInvalidToken = &AgentError{"invalid session token"}
+	// ErrTokenForOtherAgent is returned when a valid session token is presented
+	// for an agent other than the one it was issued to.
+	ErrTokenForOtherAgent = &AgentError{"session token does not match agent"}
 )
 
 // AgentError represents agent-related errors

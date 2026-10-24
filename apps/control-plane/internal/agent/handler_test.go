@@ -76,6 +76,16 @@ func decodeRegisterResponse(t *testing.T, recorder *httptest.ResponseRecorder) R
 	return resp
 }
 
+func decodeErrorResponse(t *testing.T, recorder *httptest.ResponseRecorder) ErrorResponse {
+	t.Helper()
+
+	var resp ErrorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	return resp
+}
+
 func registerAgent(t *testing.T, router *gin.Engine, req RegisterRequest) RegisterResponse {
 	t.Helper()
 
@@ -359,6 +369,62 @@ func TestHeartbeat_RejectsTokenForOtherAgent(t *testing.T) {
 	}
 }
 
+func TestHeartbeat_InvalidTokenReturnsSpecificError(t *testing.T) {
+	router := newTestRouter(t)
+	registerAgent(t, router, RegisterRequest{AgentID: "agent-1", Hostname: "host-1", Version: "1.0.0"})
+
+	token := "not-the-real-token"
+	rec := doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-1/heartbeat", HeartbeatRequest{Status: AgentStatus{RunningServices: 1}}, token)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with invalid token, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	resp := decodeErrorResponse(t, rec)
+	if resp.Error != "invalid session token" {
+		t.Errorf("expected error %q, got %q", "invalid session token", resp.Error)
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte(token)) {
+		t.Errorf("response leaked the session token: %s", rec.Body.String())
+	}
+}
+
+func TestHeartbeat_TokenForOtherAgentReturnsSpecificError(t *testing.T) {
+	router := newTestRouter(t)
+	regA := registerAgent(t, router, RegisterRequest{AgentID: "agent-a", Hostname: "host-a", Version: "1.0.0"})
+	registerAgent(t, router, RegisterRequest{AgentID: "agent-b", Hostname: "host-b", Version: "1.0.0"})
+
+	rec := doRequest(t, router, http.MethodPost, "/api/v1/agents/agent-b/heartbeat", HeartbeatRequest{Status: AgentStatus{RunningServices: 1}}, regA.SessionToken)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for cross-agent token, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	resp := decodeErrorResponse(t, rec)
+	if resp.Error != "session token does not match agent" {
+		t.Errorf("expected error %q, got %q", "session token does not match agent", resp.Error)
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte(regA.SessionToken)) {
+		t.Errorf("response leaked the session token: %s", rec.Body.String())
+	}
+}
+
+func TestHeartbeat_UnknownAgentReturnsNotFound(t *testing.T) {
+	router := newTestRouter(t)
+	reg := registerAgent(t, router, RegisterRequest{AgentID: "agent-1", Hostname: "host-1", Version: "1.0.0"})
+
+	rec := doRequest(t, router, http.MethodPost, "/api/v1/agents/ghost/heartbeat", HeartbeatRequest{Status: AgentStatus{RunningServices: 1}}, reg.SessionToken)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown agent, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	resp := decodeErrorResponse(t, rec)
+	if resp.Error != "agent not found" {
+		t.Errorf("expected error %q, got %q", "agent not found", resp.Error)
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte(reg.SessionToken)) {
+		t.Errorf("response leaked the session token: %s", rec.Body.String())
+	}
+}
+
 func TestGetAgent_RequiresAuth(t *testing.T) {
 	router := newTestRouter(t)
 	reg := registerAgent(t, router, RegisterRequest{AgentID: "agent-1", Hostname: "host-1", Version: "1.0.0"})
@@ -413,5 +479,16 @@ func TestValidateSessionToken(t *testing.T) {
 	}
 	if err := s.ValidateSessionToken("ghost", a.SessionToken); err != ErrAgentNotFound {
 		t.Errorf("expected ErrAgentNotFound, got %v", err)
+	}
+
+	b, err := s.RegisterAgent(AgentRegistration{AgentID: "agent-2", Hostname: "host-2", Version: "1.0.0"})
+	if err != nil {
+		t.Fatalf("register second agent: %v", err)
+	}
+	if err := s.ValidateSessionToken("agent-2", a.SessionToken); err != ErrTokenForOtherAgent {
+		t.Errorf("expected ErrTokenForOtherAgent, got %v", err)
+	}
+	if err := s.ValidateSessionToken("agent-2", b.SessionToken); err != nil {
+		t.Errorf("valid token for agent-2 rejected: %v", err)
 	}
 }
