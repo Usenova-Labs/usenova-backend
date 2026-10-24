@@ -34,7 +34,10 @@ func stellarLinkCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 
-			cl := newControlPlaneClient()
+			cl, err := newControlPlaneClient()
+			if err != nil {
+				return err
+			}
 			res, err := cl.LinkStellarAccount(ctx, args[0], label)
 			if err != nil {
 				return err
@@ -63,7 +66,10 @@ func stellarAccountsCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 
-			cl := newControlPlaneClient()
+			cl, err := newControlPlaneClient()
+			if err != nil {
+				return err
+			}
 			res, err := cl.ListStellarAccounts(ctx)
 			if err != nil {
 				return err
@@ -91,7 +97,10 @@ func stellarUnlinkCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 
-			cl := newControlPlaneClient()
+			cl, err := newControlPlaneClient()
+			if err != nil {
+				return err
+			}
 			if err := cl.UnlinkStellarAccount(ctx, args[0]); err != nil {
 				return err
 			}
@@ -117,7 +126,10 @@ func stellarBalanceCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 
-			cl := newControlPlaneClient()
+			cl, err := newControlPlaneClient()
+			if err != nil {
+				return err
+			}
 			res, err := cl.StellarBalance(ctx, args[0], asset)
 			if err != nil {
 				return err

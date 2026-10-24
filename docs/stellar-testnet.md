@@ -125,7 +125,7 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/stellar/accounts \
 $ curl -s -X POST http://127.0.0.1:8080/api/v1/stellar/accounts \
   -H 'Content-Type: application/json' \
   -d "{\"address\":\"$ADDRESS\",\"label\":\"payouts\"}"
-{"account":{"address":"GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX","network":"testnet","label":"payouts","linked_at":"2026-10-24T12:00:00Z"}}
+{"account":{"address":"GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX","network":"testnet","label":"payouts","linked_at":"2026-10-24T12:00:00Z"},"message":"Account linked successfully"}
 ```
 
 ## Query balances
@@ -171,6 +171,12 @@ $ curl -s "http://127.0.0.1:8080/api/v1/stellar/accounts/$ADDRESS/balance"
 Amounts are returned as strings exactly as Horizon reports them (7 decimal
 places); the CLI does not parse them into floats, so no precision is lost.
 
+An existing account with no balance matching the requested `?asset=` filter
+returns `200 OK` with an empty `balances` list (`nova` prints
+`No balances found.`). A 404 means the account itself was not found on the
+configured network; see [Unfunded account](#unfunded-account) and
+[Wrong network](#wrong-network).
+
 ## API reference
 
 | Method | Path | Description |
@@ -215,8 +221,10 @@ $ curl "https://friendbot.stellar.org/?addr=$ADDRESS"
 ### Wrong network
 
 If the control plane or CLI points at mainnet while you are using a testnet
-account (or vice versa), balance queries can return `404 Not Found` from
-Horizon or an empty result even though the account exists on another network.
+account (or vice versa), balance queries return `404 Not Found` because the
+account does not exist on the configured network. An empty account response is
+reserved for an existing account with no matching `?asset=` balance; a
+wrong-network account follows the 404 path instead.
 
 - Check `STELLAR_NETWORK` (`testnet` is the default for local development).
 - If you override `STELLAR_HORIZON_URL`, make sure it is the testnet Horizon:
