@@ -59,10 +59,15 @@ own or manage any servers. They pay per deploy using Stellar.
 1. User runs `nova deploy --name web --image nginx:alpine --server cloud`.
 2. The CLI tells the control plane to find a free slot in the fleet.
 3. The control plane picks an agent it manages, enqueues a deploy command.
-4. The Soroban payment-escrow contract locks the user's funds.
+4. The consumer authorizes and submits a `create_escrow` transaction, locking
+   their funds in the Soroban contract. (Who constructs and submits this
+   transaction — CLI, control plane, or a separate wallet step — is an open
+   design question for the fleet path.)
 5. The agent pulls and starts the container.
-6. Once the service is confirmed running, the control plane triggers escrow
-   release and pays the infrastructure operator.
+6. The control plane (or the consumer) decides off-chain that the service is
+   running. The consumer then authorizes and submits a `release` transaction,
+   paying the infrastructure operator. The contract does not verify service
+   delivery; that decision is made off-chain before the transaction is sent.
 
 ```
 User                    Usenova Control Plane        Usenova Fleet
@@ -73,8 +78,8 @@ nova deploy ──────────▶  scheduler                    agen
 ```
 
 The payment primitive — the Soroban
-[`payment-escrow`](../contracts/payment-escrow/) contract — is already
-implemented and tested on Stellar testnet. It handles `create_escrow`,
+[`payment-escrow`](../contracts/payment-escrow/) contract — is implemented
+and the repository provides a manual testnet walkthrough for `create_escrow`,
 `release`, and `refund`. Everything else in this section is planned.
 
 ---
@@ -124,14 +129,15 @@ contains the Soroban smart contract that underlies all payment flows.
 
 | Entrypoint | Effect |
 |---|---|
-| `create_escrow(id, consumer, provider, token, amount)` | Locks funds in the contract |
-| `release(id)` | Pays the provider (service delivered) |
-| `refund(id)` | Returns funds to the consumer (service not delivered) |
+| `create_escrow(id, consumer, provider, token, amount)` | Locks funds in the contract; consumer must authorize |
+| `release(id)` | Pays the provider; consumer authorizes after deciding off-chain that the service was delivered — the contract does not verify delivery |
+| `refund(id)` | Returns funds to the consumer; consumer authorizes |
 | `get_status(id)` | Returns `Pending`, `Released`, or `Refunded` |
 
-The contract is tested on Stellar testnet. See
+The repository provides a manual testnet walkthrough for all three lifecycle
+operations. See
 [`contracts/payment-escrow/README.md`](../contracts/payment-escrow/README.md)
-for build, test, and manual testnet walkthrough instructions.
+for build, test, and testnet walkthrough instructions.
 
 The Go client in [`packages/stellar/`](../packages/stellar/) wraps the
 contract entrypoints and the Horizon balance API.
