@@ -69,6 +69,7 @@ type AgentStatus struct {
 type AgentStore struct {
 	mu     sync.RWMutex
 	agents map[string]*Agent
+	tokens map[string]string
 	db     *sql.DB
 }
 
@@ -76,6 +77,7 @@ type AgentStore struct {
 func NewAgentStore() *AgentStore {
 	return &AgentStore{
 		agents: make(map[string]*Agent),
+		tokens: make(map[string]string),
 	}
 }
 
@@ -99,6 +101,7 @@ type AgentRegistration struct {
 func NewPersistentAgentStore(db *sql.DB) (*AgentStore, error) {
 	s := &AgentStore{
 		agents: make(map[string]*Agent),
+		tokens: make(map[string]string),
 		db:     db,
 	}
 
@@ -148,7 +151,7 @@ func (s *AgentStore) load() error {
 			return fmt.Errorf("parse capabilities for agent %q: %w", agentID, err)
 		}
 
-		s.agents[agentID] = &Agent{
+		agent := &Agent{
 			AgentID:          agentID,
 			Hostname:         hostname,
 			Version:          version,
@@ -156,6 +159,10 @@ func (s *AgentStore) load() error {
 			LastHeartbeat:    lastHeartbeat,
 			RegistrationTime: registrationTime,
 			SessionToken:     sessionToken,
+		}
+		s.agents[agentID] = agent
+		if sessionToken != "" {
+			s.tokens[sessionToken] = agentID
 		}
 	}
 
@@ -205,7 +212,13 @@ func (s *AgentStore) RegisterAgent(reg AgentRegistration) (*Agent, error) {
 		}
 	}
 
+	if prev, ok := s.agents[agentID]; ok && prev.SessionToken != "" {
+		delete(s.tokens, prev.SessionToken)
+	}
 	s.agents[agentID] = agent
+	if agent.SessionToken != "" {
+		s.tokens[agent.SessionToken] = agentID
+	}
 	return agent, nil
 }
 
@@ -324,30 +337,14 @@ func (s *AgentStore) ValidateSessionToken(agentID, token string) error {
 	if !exists {
 		return ErrAgentNotFound
 	}
-	if token == "" || subtle.ConstantTimeCompare([]byte(agent.SessionToken), []byte(token)) != 1 {
-		if s.tokenBelongsToOtherAgent(agentID, token) {
-			return ErrTokenForOtherAgent
-		}
-		return ErrInvalidToken
+	if token != "" && subtle.ConstantTimeCompare([]byte(agent.SessionToken), []byte(token)) == 1 {
+		return nil
 	}
-	return nil
-}
 
-// tokenBelongsToOtherAgent reports whether token is the session token of any
-// agent other than exceptID. The caller must hold at least a read lock.
-func (s *AgentStore) tokenBelongsToOtherAgent(exceptID, token string) bool {
-	if token == "" {
-		return false
+	if ownerID, ok := s.tokens[token]; ok && ownerID != agentID {
+		return ErrTokenForOtherAgent
 	}
-	for agentID, agent := range s.agents {
-		if agentID == exceptID {
-			continue
-		}
-		if subtle.ConstantTimeCompare([]byte(agent.SessionToken), []byte(token)) == 1 {
-			return true
-		}
-	}
-	return false
+	return ErrInvalidToken
 }
 
 // GetAgent retrieves an agent by ID
@@ -381,7 +378,8 @@ func (s *AgentStore) DeleteAgent(agentID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.agents[agentID]; !exists {
+	agent, exists := s.agents[agentID]
+	if !exists {
 		return ErrAgentNotFound
 	}
 
@@ -391,6 +389,9 @@ func (s *AgentStore) DeleteAgent(agentID string) error {
 		}
 	}
 
+	if agent.SessionToken != "" {
+		delete(s.tokens, agent.SessionToken)
+	}
 	delete(s.agents, agentID)
 	return nil
 }
