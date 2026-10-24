@@ -78,7 +78,7 @@ func newClient() (*client.Client, error) {
 	return client.New(agentURL, apiToken, timeout)
 }
 
-func newControlPlaneClient() *controlplane.Client {
+func newControlPlaneClient() (*controlplane.Client, error) {
 	return controlplane.New(controlPlaneURL, apiToken, controlplane.DefaultTimeout)
 }
 

@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -25,15 +27,81 @@ type Client struct {
 }
 
 // New builds a control-plane client. A trailing slash on baseURL is tolerated.
-func New(baseURL, token string, timeout time.Duration) *Client {
+// It refuses a credentialed non-loopback plaintext HTTP URL so the bearer token
+// is never sent in cleartext (CWE-319); loopback and https endpoints remain
+// allowed.
+func New(baseURL, token string, timeout time.Duration) (*Client, error) {
+	if err := checkTransport(baseURL, token); err != nil {
+		return nil, err
+	}
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
-		http:    &http.Client{Timeout: timeout},
+		http: &http.Client{
+			Timeout: timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) == 0 {
+					return nil
+				}
+				if len(via) > 10 {
+					return http.ErrUseLastResponse
+				}
+				for _, v := range via {
+					if v.Header.Get("Authorization") != "" {
+						if strings.EqualFold(req.URL.Scheme, "http") {
+							for _, vv := range via {
+								if strings.EqualFold(vv.URL.Scheme, "https") {
+									return fmt.Errorf("refusing to follow token-bearing redirect from HTTPS to HTTP")
+								}
+							}
+							if !isLoopbackHost(req.URL.Hostname()) {
+								return fmt.Errorf("refusing to follow token-bearing redirect to plaintext HTTP")
+							}
+							return fmt.Errorf("refusing to follow token-bearing redirect to plaintext HTTP")
+						}
+					}
+				}
+				return nil
+			},
+		},
+	}, nil
+}
+
+// checkTransport rejects a bearer token bound for a non-loopback host over
+// plaintext HTTP. Loopback (127.0.0.0/8, ::1, localhost) and any non-http
+// scheme are accepted; with no token there is no credential to expose.
+func checkTransport(baseURL, token string) error {
+	if token == "" {
+		return nil
 	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("invalid control plane URL %q: %w", baseURL, err)
+	}
+	if !strings.EqualFold(u.Scheme, "http") {
+		return nil
+	}
+	if host := u.Hostname(); isLoopbackHost(host) {
+		return nil
+	}
+	return fmt.Errorf("refusing to send the API token over plaintext HTTP to non-loopback host %q: use https:// or a loopback address", u.Host)
+}
+
+// isLoopbackHost reports whether host names a loopback address.
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // StellarAccount mirrors the control plane's linked-account payload.

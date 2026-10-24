@@ -5,11 +5,61 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
 const testAddress = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H"
+
+func newTestClient(t *testing.T, baseURL, token string) *Client {
+	t.Helper()
+	cl, err := New(baseURL, token, time.Second)
+	if err != nil {
+		t.Fatalf("New(%q): %v", baseURL, err)
+	}
+	return cl
+}
+
+// TestNewRejectsCleartextTokenToNonLoopback enforces CWE-319: a bearer token
+// must never be sent over plaintext HTTP to a non-loopback host.
+func TestNewRejectsCleartextTokenToNonLoopback(t *testing.T) {
+	rejected := []struct {
+		baseURL string
+		token   string
+	}{
+		{"http://192.168.1.10:8080", "secret"},
+		{"http://example.com", "secret"},
+		{"http://[fd00::1]:8080", "secret"},
+		{"http://control-plane.internal.", "secret"},
+	}
+	for _, tc := range rejected {
+		if _, err := New(tc.baseURL, tc.token, time.Second); err == nil {
+			t.Errorf("New(%q, token) = nil error, want plaintext/remote rejection", tc.baseURL)
+		} else if !strings.Contains(err.Error(), "plaintext") {
+			t.Errorf("New(%q, token) error = %v, want plaintext transport message", tc.baseURL, err)
+		}
+	}
+
+	allowed := []struct {
+		baseURL string
+		token   string
+	}{
+		{"http://127.0.0.1:8080", "secret"},
+		{"http://127.0.0.1", "secret"},
+		{"http://localhost:8080", "secret"},
+		{"http://LOCALHOST:8080", "secret"},
+		{"http://[::1]:8080", "secret"},
+		{"https://example.com", "secret"},
+		{"http://192.168.1.10:8080", ""}, // no token: nothing to expose
+		{"", "secret"},                   // no scheme: nothing to send in cleartext
+	}
+	for _, tc := range allowed {
+		if _, err := New(tc.baseURL, tc.token, time.Second); err != nil {
+			t.Errorf("New(%q, token=%q) = %v, want nil", tc.baseURL, tc.token, err)
+		}
+	}
+}
 
 func TestLinkStellarAccount(t *testing.T) {
 	var gotPath, gotMethod string
@@ -26,7 +76,7 @@ func TestLinkStellarAccount(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cl := New(srv.URL, "token", time.Second)
+	cl := newTestClient(t, srv.URL, "token")
 	res, err := cl.LinkStellarAccount(context.Background(), testAddress, "payouts")
 	if err != nil {
 		t.Fatalf("LinkStellarAccount: %v", err)
@@ -51,7 +101,7 @@ func TestListStellarAccounts(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cl := New(srv.URL, "", time.Second)
+	cl := newTestClient(t, srv.URL, "")
 	res, err := cl.ListStellarAccounts(context.Background())
 	if err != nil {
 		t.Fatalf("ListStellarAccounts: %v", err)
@@ -73,7 +123,7 @@ func TestStellarBalanceFiltersByAsset(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cl := New(srv.URL, "", time.Second)
+	cl := newTestClient(t, srv.URL, "")
 	res, err := cl.StellarBalance(context.Background(), testAddress, "USDC")
 	if err != nil {
 		t.Fatalf("StellarBalance: %v", err)
@@ -95,7 +145,7 @@ func TestUnlinkStellarAccount(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cl := New(srv.URL, "", time.Second)
+	cl := newTestClient(t, srv.URL, "")
 	if err := cl.UnlinkStellarAccount(context.Background(), testAddress); err != nil {
 		t.Fatalf("UnlinkStellarAccount: %v", err)
 	}
@@ -111,7 +161,7 @@ func TestErrorResponseSurfaced(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cl := New(srv.URL, "", time.Second)
+	cl := newTestClient(t, srv.URL, "")
 	_, err := cl.LinkStellarAccount(context.Background(), "bad", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")

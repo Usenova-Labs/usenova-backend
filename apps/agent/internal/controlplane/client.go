@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"runtime"
@@ -69,6 +70,35 @@ func NewClient(baseURL, agentToken string, log *logrus.Logger) *Client {
 		agentToken: agentToken,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) == 0 {
+					return nil
+				}
+				if len(via) > 10 {
+					return http.ErrUseLastResponse
+				}
+				// If the original request had an Authorization header with a token,
+				// reject redirects that would send the token over plaintext.
+				for _, v := range via {
+					if v.Header.Get("Authorization") != "" {
+						// Reject if redirecting to HTTP (plaintext) from HTTPS, or to HTTP scheme
+						if strings.EqualFold(req.URL.Scheme, "http") {
+							// Also reject if going to non-localhost HTTP
+							if !isLoopbackHost(req.URL.Hostname()) {
+								return fmt.Errorf("refusing to follow token-bearing redirect to plaintext HTTP")
+							}
+							// Check if original was HTTPS - downgrade
+							for _, vv := range via {
+								if strings.EqualFold(vv.URL.Scheme, "https") {
+									return fmt.Errorf("refusing to follow token-bearing redirect from HTTPS to HTTP")
+								}
+							}
+							return fmt.Errorf("refusing to follow token-bearing redirect to plaintext HTTP")
+						}
+					}
+				}
+				return nil
+			},
 		},
 		log:                log,
 		startTime:          time.Now(),
@@ -406,4 +436,17 @@ func (c *Client) GetAgentID() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.agentID
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
