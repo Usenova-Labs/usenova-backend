@@ -5,7 +5,9 @@
 **What works today:** the full local stack — control plane, agent, and `nova` CLI on one
 machine, including Docker deploys, health checks, circuit breaker, remote command channel
 (agents poll the control plane behind NAT), and Stellar testnet account linking and balance
-queries. The automated smoke test exercises the complete path end to end.
+queries. The automated smoke test exercises the deployment path (deploy, kill/restart, logs,
+cleanup) end to end; Stellar testnet steps require a funded account and are covered in
+[docs/stellar-testnet.md](stellar-testnet.md).
 
 **Not yet available:** the hosted fleet (Host-on-Usenova), mainnet Stellar payments, and
 packaged binary releases. See [docs/host-on-usenova.md](host-on-usenova.md) for the fleet
@@ -252,5 +254,7 @@ service and prints a summary. Logs of the run stay in `bin/smoke/`.
 ---
 
 **Note**: The hosted fleet (Host-on-Usenova) and mainnet Stellar support are planned but
-not yet built. Everything in this guide — local deploy, health checks, circuit breaker,
-remote command channel, Stellar testnet — works today and is verified by the smoke test.
+not yet built. Everything in this guide works today. The smoke test (`scripts/e2e-smoke.sh`)
+verifies the deployment path — control plane, agent, deploy, kill/restart, logs, and cleanup.
+Stellar testnet steps (account linking, balance queries) require a funded testnet account
+and are covered separately in [docs/stellar-testnet.md](stellar-testnet.md).
