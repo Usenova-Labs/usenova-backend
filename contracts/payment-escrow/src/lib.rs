@@ -349,4 +349,179 @@ mod test {
 
         assert_eq!(client.get_status(&1), EscrowStatus::Released);
     }
+
+    // -----------------------------------------------------------------------
+    // New tests added for issue #31
+    // -----------------------------------------------------------------------
+
+    /// create_escrow accepts the maximum representable i128 value.
+    /// The contract only requires amount > 0; there is no upper-bound check.
+    #[test]
+    fn create_escrow_max_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PaymentEscrow);
+        let admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract(admin);
+        let consumer = Address::generate(&env);
+        let provider = Address::generate(&env);
+
+        // Mint exactly i128::MAX to the consumer so the transfer succeeds.
+        StellarAssetClient::new(&env, &token).mint(&consumer, &i128::MAX);
+
+        let client = PaymentEscrowClient::new(&env, &contract_id);
+        let token_client = TokenClient::new(&env, &token);
+
+        client.create_escrow(&1, &consumer, &provider, &token, &i128::MAX);
+
+        assert_eq!(token_client.balance(&consumer), 0);
+        assert_eq!(token_client.balance(&contract_id), i128::MAX);
+        assert_eq!(client.get_status(&1), EscrowStatus::Pending);
+
+        let escrow = client.get_escrow(&1);
+        assert_eq!(escrow.amount, i128::MAX);
+    }
+
+    /// create_escrow with the same address for consumer and provider is
+    /// permitted by the contract — there is no restriction preventing it.
+    /// The funds are locked in the contract and released back to the same
+    /// address on release.
+    #[test]
+    fn create_escrow_same_consumer_and_provider() {
+        let s = setup();
+        let client = PaymentEscrowClient::new(&s.env, &s.contract_id);
+        let token = TokenClient::new(&s.env, &s.token);
+
+        // Use the consumer as both consumer and provider.
+        client.create_escrow(&1, &s.consumer, &s.consumer, &s.token, &400);
+
+        // Funds are locked in the contract.
+        assert_eq!(token.balance(&s.consumer), 600);
+        assert_eq!(token.balance(&s.contract_id), 400);
+        assert_eq!(client.get_status(&1), EscrowStatus::Pending);
+
+        // Release pays the "provider" (same address), so the consumer gets
+        // the funds back.
+        client.release(&1);
+        assert_eq!(token.balance(&s.consumer), 1_000);
+        assert_eq!(token.balance(&s.contract_id), 0);
+        assert_eq!(client.get_status(&1), EscrowStatus::Released);
+    }
+
+    /// Mirrors cannot_refund_after_release: refunding first and then trying
+    /// to release must fail with NotPending.
+    #[test]
+    fn cannot_release_after_refund() {
+        let s = setup();
+        let client = PaymentEscrowClient::new(&s.env, &s.contract_id);
+
+        client.create_escrow(&1, &s.consumer, &s.provider, &s.token, &400);
+        client.refund(&1);
+
+        let res = client.try_release(&1);
+        assert_eq!(res, Err(Ok(Error::NotPending)));
+    }
+
+    /// get_escrow on a released escrow returns the full record with
+    /// status Released.
+    #[test]
+    fn get_escrow_after_release_shows_released_status() {
+        let s = setup();
+        let client = PaymentEscrowClient::new(&s.env, &s.contract_id);
+
+        client.create_escrow(&1, &s.consumer, &s.provider, &s.token, &400);
+        client.release(&1);
+
+        let escrow = client.get_escrow(&1);
+        assert_eq!(escrow.status, EscrowStatus::Released);
+        assert_eq!(escrow.amount, 400);
+        assert_eq!(escrow.consumer, s.consumer);
+        assert_eq!(escrow.provider, s.provider);
+    }
+
+    /// get_escrow on a refunded escrow returns the full record with
+    /// status Refunded.
+    #[test]
+    fn get_escrow_after_refund_shows_refunded_status() {
+        let s = setup();
+        let client = PaymentEscrowClient::new(&s.env, &s.contract_id);
+
+        client.create_escrow(&1, &s.consumer, &s.provider, &s.token, &400);
+        client.refund(&1);
+
+        let escrow = client.get_escrow(&1);
+        assert_eq!(escrow.status, EscrowStatus::Refunded);
+        assert_eq!(escrow.amount, 400);
+        assert_eq!(escrow.consumer, s.consumer);
+        assert_eq!(escrow.provider, s.provider);
+    }
+
+    /// Two escrows backed by different token contracts are fully independent:
+    /// releasing one does not affect the balances or status of the other.
+    #[test]
+    fn two_escrows_different_tokens_are_independent() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PaymentEscrow);
+        let consumer = Address::generate(&env);
+        let provider = Address::generate(&env);
+
+        // Register two separate token contracts.
+        let admin_a = Address::generate(&env);
+        let admin_b = Address::generate(&env);
+        let token_a = env.register_stellar_asset_contract(admin_a);
+        let token_b = env.register_stellar_asset_contract(admin_b);
+
+        StellarAssetClient::new(&env, &token_a).mint(&consumer, &500);
+        StellarAssetClient::new(&env, &token_b).mint(&consumer, &500);
+
+        let client = PaymentEscrowClient::new(&env, &contract_id);
+        let ta = TokenClient::new(&env, &token_a);
+        let tb = TokenClient::new(&env, &token_b);
+
+        client.create_escrow(&1, &consumer, &provider, &token_a, &300);
+        client.create_escrow(&2, &consumer, &provider, &token_b, &200);
+
+        // Release escrow 1 (token A), refund escrow 2 (token B).
+        client.release(&1);
+        client.refund(&2);
+
+        // Token A: provider received 300, consumer kept 200.
+        assert_eq!(ta.balance(&provider), 300);
+        assert_eq!(ta.balance(&consumer), 200);
+        assert_eq!(ta.balance(&contract_id), 0);
+
+        // Token B: consumer got 200 back, provider received nothing.
+        assert_eq!(tb.balance(&consumer), 500);
+        assert_eq!(tb.balance(&provider), 0);
+        assert_eq!(tb.balance(&contract_id), 0);
+
+        assert_eq!(client.get_status(&1), EscrowStatus::Released);
+        assert_eq!(client.get_status(&2), EscrowStatus::Refunded);
+    }
+
+    /// Escrow created at ledger sequence 1 is still accessible and can be
+    /// released after jumping to sequence 100_000, confirming persistent
+    /// storage survives a large ledger gap.
+    #[test]
+    fn escrow_persists_across_large_ledger_gap() {
+        let s = setup();
+        let client = PaymentEscrowClient::new(&s.env, &s.contract_id);
+        let token = TokenClient::new(&s.env, &s.token);
+
+        s.env.ledger().with_mut(|info| info.sequence_number = 1);
+        client.create_escrow(&1, &s.consumer, &s.provider, &s.token, &400);
+        assert_eq!(client.get_status(&1), EscrowStatus::Pending);
+
+        s.env
+            .ledger()
+            .with_mut(|info| info.sequence_number = 100_000);
+        client.release(&1);
+
+        assert_eq!(client.get_status(&1), EscrowStatus::Released);
+        assert_eq!(token.balance(&s.provider), 400);
+        assert_eq!(token.balance(&s.consumer), 600);
+    }
 }
