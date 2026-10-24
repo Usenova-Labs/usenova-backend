@@ -9,13 +9,10 @@ services on user-controlled infrastructure. The platform integrates with the Ste
 network for payments and uses Soroban smart contracts for escrow. It is designed to evolve
 into a decentralized compute marketplace.
 
-**Current Status:** BYOI MVP shipped — agent (service lifecycle, Docker, health checks,
+**Current Status:** Usenova MVP shipped — agent (service lifecycle, Docker, health checks,
 circuit breaker), remote deploy command channel, logs, SQLite agent registry, session auth;
 Stellar testnet integration (account linking, balance queries) and Soroban payment-escrow
 contract; Host-on-Usenova (managed fleet) is planned.
-
-This is an independent open-source project. It is not an official Stellar product and is not
-endorsed by the Stellar Development Foundation.
 
 ## Key Features
 
@@ -74,8 +71,9 @@ See [docs/remote-deploy.md](docs/remote-deploy.md) for the command channel desig
 
 ## Quick Start
 
-> **Note**: The CLI, agent, and control plane all work today. Packaged releases and the
-> hosted fleet offering are forthcoming.
+> **What works today:** CLI, agent, control plane, remote command channel, and Stellar
+> testnet integration (account linking, balance queries, Soroban escrow contract).
+> Packaged releases and the hosted fleet (Host-on-Usenova) are still forthcoming.
 
 ```bash
 # Build the CLI from source (bin/ is gitignored; subshell keeps you at the repo root)
@@ -148,7 +146,7 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for deta
 - [x] Remote deploy command channel (poll-based, NAT-friendly)
 - [x] Stellar testnet account linking and balance queries
 - [x] Soroban payment-escrow contract (create, release, refund)
-- [ ] Host-on-Usenova (managed fleet / scheduler)
+- [ ] Host-on-Usenova (managed fleet / scheduler) — see [docs/host-on-usenova.md](docs/host-on-usenova.md)
 - [ ] Mainnet Stellar support
 - [ ] Compute marketplace features
 
