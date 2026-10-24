@@ -110,6 +110,19 @@ designed for simplicity, security, and future extensibility into a compute marke
 
 ## Data Flow
 
+### Remote Deploy Command Channel Flow
+
+The remote deploy channel lets operators send `deploy`, `stop`, and `remove`
+commands to an agent running behind NAT. The agent always polls the CP — no
+inbound ports required. See [docs/remote-deploy.md](remote-deploy.md) for the
+full design note and diagrams.
+
+```
+operator ──enqueue──▶ CP queue ──poll──▶ agent ──execute──▶ runtime manager
+                              ▲                                   │
+                              └───────────result───────────────────┘
+```
+
 ### Service Deployment Flow
 
 ```
