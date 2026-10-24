@@ -71,8 +71,9 @@ See [docs/remote-deploy.md](docs/remote-deploy.md) for the command channel desig
 
 ## Quick Start
 
-> **Note**: The CLI, agent, and control plane all work today. Packaged releases and the
-> hosted fleet offering are forthcoming.
+> **What works today:** CLI, agent, control plane, remote command channel, and Stellar
+> testnet integration (account linking, balance queries, Soroban escrow contract).
+> Packaged releases and the hosted fleet (Host-on-Usenova) are still forthcoming.
 
 ```bash
 # Build the CLI from source (bin/ is gitignored; subshell keeps you at the repo root)

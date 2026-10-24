@@ -2,8 +2,14 @@
 
 > Quick start guide for deploying your first always-on service
 
-**Status**: this guide covers the local path that works today: control plane, agent and the
-`nova` CLI running on one machine. Remote agents and hosted payments are still on the roadmap.
+**What works today:** the full local stack — control plane, agent, and `nova` CLI on one
+machine, including Docker deploys, health checks, circuit breaker, remote command channel
+(agents poll the control plane behind NAT), and Stellar testnet account linking and balance
+queries. The automated smoke test exercises the complete path end to end.
+
+**Not yet available:** the hosted fleet (Host-on-Usenova), mainnet Stellar payments, and
+packaged binary releases. See [docs/host-on-usenova.md](host-on-usenova.md) for the fleet
+roadmap.
 
 ## What this guide covers
 
@@ -245,5 +251,6 @@ service and prints a summary. Logs of the run stay in `bin/smoke/`.
 
 ---
 
-**Note**: This project is in early MVP stage. The local path described above is the one that works
-end to end today; remote agents and payment flows are still being built.
+**Note**: The hosted fleet (Host-on-Usenova) and mainnet Stellar support are planned but
+not yet built. Everything in this guide — local deploy, health checks, circuit breaker,
+remote command channel, Stellar testnet — works today and is verified by the smoke test.
