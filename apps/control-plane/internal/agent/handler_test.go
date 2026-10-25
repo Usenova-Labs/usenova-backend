@@ -284,6 +284,61 @@ func TestRegisterPlatformAgent_RegistersFleetMetadata(t *testing.T) {
 	}
 }
 
+func TestRegisterPlatformAgent_NormalizesLabels(t *testing.T) {
+	const platformToken = "platform-secret"
+	router := newTestRouterWithPlatformToken(t, platformToken)
+
+	reg := registerPlatformAgent(t, router, platformToken, RegisterRequest{
+		AgentID:  "platform-1",
+		Hostname: "host-1",
+		Version:  "1.0.0",
+		OwnerID:  "fleet-1",
+		Labels:   map[string]string{" region ": " us-east ", "pool": " alpha "},
+	})
+
+	recorder := doRequest(t, router, http.MethodGet, "/api/v1/agents/platform-1", nil, reg.SessionToken)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+
+	agent := decodeAgent(t, recorder)
+	if got := agent.Labels["region"]; got != "us-east" {
+		t.Errorf("region label = %q, want us-east", got)
+	}
+	if got := agent.Labels["pool"]; got != "alpha" {
+		t.Errorf("pool label = %q, want alpha", got)
+	}
+
+	recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents?label=region=us-east&label=pool=alpha", nil, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	var resp AgentListResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode agent list: %v", err)
+	}
+	if resp.Total != 1 || resp.Agents[0].AgentID != "platform-1" {
+		t.Errorf("normalized labels did not match filters: %+v", resp.Agents)
+	}
+}
+
+func TestRegisterPlatformAgent_RejectsConflictingNormalizedLabels(t *testing.T) {
+	const platformToken = "platform-secret"
+	router := newTestRouterWithPlatformToken(t, platformToken)
+
+	recorder := doRequestWithHeaders(t, router, http.MethodPost, "/api/v1/agents/register/platform", RegisterRequest{
+		AgentID:  "platform-1",
+		Hostname: "host-1",
+		Version:  "1.0.0",
+		Labels:   map[string]string{"region": "us-east", " region ": "eu-west"},
+	}, "", map[string]string{
+		"X-Platform-Bootstrap-Token": platformToken,
+	})
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestListAgents_FiltersByOwnershipAndLabels(t *testing.T) {
 	const platformToken = "platform-secret"
 	router := newTestRouterWithPlatformToken(t, platformToken)
@@ -315,6 +370,7 @@ func TestListAgents_FiltersByOwnershipAndLabels(t *testing.T) {
 		{name: "owner id", query: "?owner_id=fleet-a", want: []string{"platform-1", "platform-2"}},
 		{name: "single label", query: "?label=region=us-east", want: []string{"platform-1"}},
 		{name: "all labels", query: "?label=region=us-east&label=pool=alpha", want: []string{"platform-1"}},
+		{name: "identical duplicate label", query: "?label=region=us-east&label=region=us-east", want: []string{"platform-1"}},
 		{name: "labels list", query: "?labels=region=us-east,pool=alpha", want: []string{"platform-1"}},
 		{name: "no match", query: "?label=region=us-east&label=pool=beta"},
 	}
@@ -354,6 +410,7 @@ func TestListAgents_RejectsInvalidFilters(t *testing.T) {
 		"?owner_type=admin",
 		"?label=missing-equals",
 		"?label==value",
+		"?label=region=us-east&label=region=eu-west",
 	}
 	for _, query := range tests {
 		t.Run(query, func(t *testing.T) {

@@ -118,16 +118,15 @@ func (h *Handler) registerAgent(c *gin.Context, ownerType OwnerType, useOwnershi
 		registration.System = *req.System
 	}
 	if useOwnership {
-		for key := range req.Labels {
-			if strings.TrimSpace(key) == "" {
-				c.JSON(http.StatusBadRequest, ErrorResponse{
-					Error: "Label keys must not be empty",
-				})
-				return
-			}
+		labels, err := normalizeLabels(req.Labels)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, ErrorResponse{
+				Error: err.Error(),
+			})
+			return
 		}
 		registration.OwnerID = req.OwnerID
-		registration.Labels = req.Labels
+		registration.Labels = labels
 	}
 
 	h.logger.WithFields(logrus.Fields{
@@ -290,6 +289,31 @@ func (h *Handler) ListAgents(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// normalizeLabels trims label keys and values so registrations and filters
+// use the same representation. Keys that collide after trimming are accepted
+// only when they carry the same value; otherwise the filter would silently
+// match just one of the requested values.
+func normalizeLabels(labels map[string]string) (map[string]string, error) {
+	if len(labels) == 0 {
+		return nil, nil
+	}
+
+	normalized := make(map[string]string, len(labels))
+	for key, value := range labels {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, errors.New("label keys must not be empty")
+		}
+
+		value = strings.TrimSpace(value)
+		if existing, ok := normalized[key]; ok && existing != value {
+			return nil, errors.New("conflicting values for label \"" + key + "\"")
+		}
+		normalized[key] = value
+	}
+	return normalized, nil
+}
+
 func agentFilterFromQuery(c *gin.Context) (AgentFilter, error) {
 	filter := AgentFilter{
 		OwnerID: c.Query("owner_id"),
@@ -314,10 +338,14 @@ func agentFilterFromQuery(c *gin.Context) (AgentFilter, error) {
 			if !ok || key == "" {
 				return AgentFilter{}, errors.New("labels must use key=value format")
 			}
+			value = strings.TrimSpace(value)
 			if filter.Labels == nil {
 				filter.Labels = make(map[string]string)
 			}
-			filter.Labels[key] = strings.TrimSpace(value)
+			if existing, ok := filter.Labels[key]; ok && existing != value {
+				return AgentFilter{}, errors.New("conflicting values for label \"" + key + "\"")
+			}
+			filter.Labels[key] = value
 		}
 	}
 
