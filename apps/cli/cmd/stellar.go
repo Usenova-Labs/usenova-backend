@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -182,68 +181,68 @@ func reportStellarBalanceError(address string, err error) error {
 }
 
 func newStellarBalanceError(address string, err error) *stellarBalanceError {
+	var apiErr *controlplane.APIError
+	if !errors.As(err, &apiErr) {
+		// Errors outside a control-plane response come from the CLI-to-control-
+		// plane hop; they say nothing about Horizon's reachability.
+		return &stellarBalanceError{Kind: "control_plane_error", Message: err.Error()}
+	}
+
 	network := stellarNetworkFromEnv()
 	horizonURL := stellarHorizonURL(network)
+	if apiErr.Network != "" {
+		network = apiErr.Network
+	}
+	if apiErr.HorizonURL != "" {
+		horizonURL = apiErr.HorizonURL
+	} else if u := horizonURLFromMessage(apiErr.Title + " " + apiErr.Message); u != "" {
+		horizonURL = u
+	}
 
-	var apiErr *controlplane.APIError
-	if errors.As(err, &apiErr) {
-		if apiErr.Network != "" {
-			network = apiErr.Network
-		}
-		if apiErr.HorizonURL != "" {
-			horizonURL = apiErr.HorizonURL
-		} else if u := horizonURLFromMessage(apiErr.Title + " " + apiErr.Message); u != "" {
-			horizonURL = u
-		}
+	base := &stellarBalanceError{
+		StatusCode: apiErr.StatusCode,
+		Address:    address,
+		Network:    network,
+		HorizonURL: horizonURL,
+	}
 
-		base := &stellarBalanceError{
-			StatusCode: apiErr.StatusCode,
-			Address:    address,
-			Network:    network,
-			HorizonURL: horizonURL,
-		}
-		if apiErr.StatusCode == http.StatusNotFound {
-			base.Kind = "account_not_found"
-			base.Message = fmt.Sprintf("Account %s not found on %s. Is it funded?", address, network)
-			return base
-		}
+	detail := apiErr.Title + " " + apiErr.Message
+	if apiErr.StatusCode == http.StatusNotFound && isAccountNotFound(detail) {
+		base.Kind = "account_not_found"
+		base.Message = fmt.Sprintf("Account %s not found on %s. Is it funded?", address, network)
+		return base
+	}
 
-		detail := apiErr.Title + " " + apiErr.Message
-		status := apiErr.HorizonStatus
-		if status == 0 {
-			status = horizonStatusFromMessage(detail)
-		}
-		if status >= 500 {
-			return newHorizonStatusError(base, status)
-		}
+	status := apiErr.HorizonStatus
+	if status == 0 {
+		status = horizonStatusFromMessage(detail)
+	}
+	if status >= 500 {
+		return newHorizonStatusError(base, status)
+	}
 
+	// Only treat the control-plane gateway status as an unreachable hint when
+	// the envelope does not tell us what Horizon actually returned. A known
+	// non-5xx Horizon status means Horizon answered (e.g. 429), not that it was
+	// unreachable.
+	if status == 0 {
 		if indicatesHorizonUnreachable(detail) ||
 			apiErr.StatusCode == http.StatusBadGateway ||
 			apiErr.StatusCode == http.StatusServiceUnavailable ||
 			apiErr.StatusCode == http.StatusGatewayTimeout {
 			return newHorizonUnreachableError(base)
 		}
-
-		base.Kind = "control_plane_error"
-		base.Message = apiErr.Error()
-		return base
 	}
 
-	if u := horizonURLFromMessage(err.Error()); u != "" {
-		horizonURL = u
-	}
-
-	base := &stellarBalanceError{
-		Address:    address,
-		Network:    network,
-		HorizonURL: horizonURL,
-	}
-	if isTransportError(err) || indicatesHorizonUnreachable(err.Error()) {
-		return newHorizonUnreachableError(base)
-	}
-	base.Kind = "error"
-	base.Message = err.Error()
+	base.Kind = "control_plane_error"
+	base.Message = apiErr.Error()
 	return base
+}
+
+func isAccountNotFound(detail string) bool {
+	lower := strings.ToLower(detail)
+	return strings.Contains(lower, "account not found") ||
+		strings.Contains(lower, "account does not exist")
 }
 
 func newHorizonUnreachableError(base *stellarBalanceError) *stellarBalanceError {
@@ -355,25 +354,6 @@ func indicatesHorizonUnreachable(msg string) bool {
 		}
 	}
 	return false
-}
-
-func isTransportError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return true
-	}
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
-		return true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return true
-	}
-	var opErr *net.OpError
-	return errors.As(err, &opErr)
 }
 
 // printAccountTable renders linked accounts as an aligned table.

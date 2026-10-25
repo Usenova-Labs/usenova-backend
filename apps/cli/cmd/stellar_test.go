@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -66,8 +67,14 @@ func runStellarBalance(t *testing.T, outputMode string, handler http.HandlerFunc
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
+	return runStellarBalanceAtURL(t, outputMode, srv.URL)
+}
+
+func runStellarBalanceAtURL(t *testing.T, outputMode, baseURL string) (string, error) {
+	t.Helper()
+
 	oldCP, oldOut := controlPlaneURL, output
-	controlPlaneURL, output = srv.URL, outputMode
+	controlPlaneURL, output = baseURL, outputMode
 	t.Cleanup(func() {
 		controlPlaneURL, output = oldCP, oldOut
 	})
@@ -208,5 +215,80 @@ func TestStellarBalanceJSONErrorObject(t *testing.T) {
 	}
 	if got["status_code"] != float64(http.StatusNotFound) {
 		t.Errorf("json status_code = %v, want %d", got["status_code"], http.StatusNotFound)
+	}
+}
+
+func TestStellarBalanceNonAccount404(t *testing.T) {
+	_, err := runStellarBalance(t, "text", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": "Route not found",
+		})
+	})
+
+	want := "control plane error (404): Route not found"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+	if strings.Contains(err.Error(), "Is it funded?") {
+		t.Errorf("non-account 404 used unfunded-account guidance: %v", err)
+	}
+}
+
+func TestStellarBalanceHorizonNon5xx(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{
+			name: "structured status",
+			body: map[string]any{
+				"error":          "Failed to fetch balance from network",
+				"message":        "stellar: horizon returned 429: rate limited",
+				"horizon_status": http.StatusTooManyRequests,
+			},
+		},
+		{
+			name: "status in message",
+			body: map[string]any{
+				"error":   "Failed to fetch balance from network",
+				"message": "stellar: horizon returned 400: bad request",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := runStellarBalance(t, "text", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadGateway)
+				_ = json.NewEncoder(w).Encode(tc.body)
+			})
+
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if strings.Contains(err.Error(), "Could not reach Stellar Horizon") {
+				t.Errorf("Horizon answered with a non-5xx status but CLI reported unreachable: %v", err)
+			}
+			if !strings.Contains(err.Error(), "control plane error (502)") {
+				t.Errorf("error = %v, want plain control-plane error", err)
+			}
+		})
+	}
+}
+
+func TestStellarBalanceControlPlaneUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	controlPlaneAddr := srv.URL
+	srv.Close()
+
+	_, err := runStellarBalanceAtURL(t, "text", controlPlaneAddr)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if strings.Contains(err.Error(), "Stellar Horizon") {
+		t.Errorf("control-plane failure reported as a Horizon failure: %v", err)
+	}
+	if !strings.Contains(err.Error(), controlPlaneAddr) {
+		t.Errorf("error = %v, want it to mention the control plane at %s", err, controlPlaneAddr)
 	}
 }
