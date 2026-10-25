@@ -199,3 +199,50 @@ func TestGetBalanceInvalidAddress(t *testing.T) {
 		t.Error("provider must not be called for an invalid address")
 	}
 }
+
+func TestGetBalanceHorizonUnreachableMetadata(t *testing.T) {
+	provider := &fakeProvider{err: &sdk.HorizonUnreachableError{
+		URL: "https://horizon-testnet.stellar.org",
+		Err: context.DeadlineExceeded,
+	}}
+	_, r := newTestHandler(provider)
+
+	w := doJSON(r, http.MethodGet, "/api/v1/stellar/accounts/"+testAddress+"/balance", nil)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", w.Code)
+	}
+	var resp ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Network != "testnet" {
+		t.Errorf("network = %q, want testnet", resp.Network)
+	}
+	if resp.HorizonURL != "https://horizon-testnet.stellar.org" {
+		t.Errorf("horizon_url = %q", resp.HorizonURL)
+	}
+}
+
+func TestGetBalanceHorizonStatusMetadata(t *testing.T) {
+	provider := &fakeProvider{err: &sdk.HorizonStatusError{
+		URL:        "https://horizon-testnet.stellar.org",
+		StatusCode: http.StatusServiceUnavailable,
+		Body:       "unavailable",
+	}}
+	_, r := newTestHandler(provider)
+
+	w := doJSON(r, http.MethodGet, "/api/v1/stellar/accounts/"+testAddress+"/balance", nil)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", w.Code)
+	}
+	var resp ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Network != "testnet" {
+		t.Errorf("network = %q, want testnet", resp.Network)
+	}
+	if resp.HorizonStatus != http.StatusServiceUnavailable {
+		t.Errorf("horizon_status = %d, want %d", resp.HorizonStatus, http.StatusServiceUnavailable)
+	}
+}

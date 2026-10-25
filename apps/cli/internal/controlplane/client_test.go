@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -168,6 +169,71 @@ func TestErrorResponseSurfaced(t *testing.T) {
 	}
 	if want := "Invalid Stellar address: too short"; err.Error() == "" || !contains(err.Error(), want) {
 		t.Errorf("error = %q, want to contain %q", err.Error(), want)
+	}
+}
+
+func TestStellarBalanceErrorMetadata(t *testing.T) {
+	cases := []struct {
+		name          string
+		status        int
+		body          ErrorResponse
+		wantStatus    int
+		wantNetwork   string
+		wantHorizon   string
+		wantHorizonSt int
+	}{
+		{
+			name:        "account not found",
+			status:      http.StatusNotFound,
+			body:        ErrorResponse{Error: "Account not found on network", Network: "testnet"},
+			wantStatus:  http.StatusNotFound,
+			wantNetwork: "testnet",
+		},
+		{
+			name:        "horizon unreachable",
+			status:      http.StatusBadGateway,
+			body:        ErrorResponse{Error: "Failed to fetch balance from network", Message: "stellar: horizon request: dial tcp", Network: "testnet", HorizonURL: "https://horizon-testnet.stellar.org"},
+			wantStatus:  http.StatusBadGateway,
+			wantNetwork: "testnet",
+			wantHorizon: "https://horizon-testnet.stellar.org",
+		},
+		{
+			name:          "horizon 5xx",
+			status:        http.StatusBadGateway,
+			body:          ErrorResponse{Error: "Failed to fetch balance from network", Message: "stellar: horizon returned 503: unavailable", Network: "testnet", HorizonURL: "https://horizon-testnet.stellar.org", HorizonStatus: http.StatusServiceUnavailable},
+			wantStatus:    http.StatusBadGateway,
+			wantNetwork:   "testnet",
+			wantHorizon:   "https://horizon-testnet.stellar.org",
+			wantHorizonSt: http.StatusServiceUnavailable,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(tc.body)
+			}))
+			defer srv.Close()
+
+			cl := newTestClient(t, srv.URL, "")
+			_, err := cl.StellarBalance(context.Background(), testAddress, "")
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("err = %v, want *APIError", err)
+			}
+			if apiErr.StatusCode != tc.wantStatus {
+				t.Errorf("StatusCode = %d, want %d", apiErr.StatusCode, tc.wantStatus)
+			}
+			if apiErr.Network != tc.wantNetwork {
+				t.Errorf("Network = %q, want %q", apiErr.Network, tc.wantNetwork)
+			}
+			if apiErr.HorizonURL != tc.wantHorizon {
+				t.Errorf("HorizonURL = %q, want %q", apiErr.HorizonURL, tc.wantHorizon)
+			}
+			if apiErr.HorizonStatus != tc.wantHorizonSt {
+				t.Errorf("HorizonStatus = %d, want %d", apiErr.HorizonStatus, tc.wantHorizonSt)
+			}
+		})
 	}
 }
 

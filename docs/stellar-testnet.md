@@ -251,7 +251,29 @@ zero balance.
 
 ```text
 $ ./bin/nova stellar balance "$ADDRESS"
-Error: control plane error (404): Account not found on network
+Error: Account GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX not found on testnet. Is it funded?
+```
+
+### Horizon unreachable
+
+If Horizon itself is down or your machine cannot reach it, the CLI reports the
+Horizon endpoint instead of a raw control-plane HTTP error:
+
+```text
+$ ./bin/nova stellar balance "$ADDRESS"
+Error: Could not reach Stellar Horizon at https://horizon-testnet.stellar.org. Check your network or try again later.
+```
+
+- Check your network connection and any proxy/firewall settings.
+- Verify `STELLAR_HORIZON_URL` (the default is
+  `https://horizon-testnet.stellar.org`).
+- Retry later; Horizon testnet occasionally has brief outages.
+- `-o json` returns the same information as a structured error object.
+
+A Horizon 5xx response is reported as:
+
+```text
+Error: Horizon returned an error (status 503). The testnet may be experiencing issues.
 ```
 
 ### Account already linked / invalid address

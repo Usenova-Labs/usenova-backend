@@ -157,10 +157,47 @@ type Balance struct {
 // AccountNotFoundError indicates Horizon returned 404 for an address.
 type AccountNotFoundError struct {
 	Address string
+	// Network is the network the lookup ran against (e.g. testnet).
+	Network Network
 }
 
 func (e *AccountNotFoundError) Error() string {
 	return fmt.Sprintf("stellar: account %s not found", e.Address)
+}
+
+// HorizonUnreachableError indicates the Horizon endpoint could not be reached,
+// for example because of a connection refusal, DNS failure, or timeout.
+type HorizonUnreachableError struct {
+	// URL is the Horizon endpoint that was queried.
+	URL string
+	// Err is the underlying transport error.
+	Err error
+}
+
+func (e *HorizonUnreachableError) Error() string {
+	if e.URL == "" {
+		return fmt.Sprintf("stellar: horizon request: %v", e.Err)
+	}
+	return fmt.Sprintf("stellar: horizon request to %s: %v", e.URL, e.Err)
+}
+
+// Unwrap exposes the underlying transport error for errors.Is/errors.As.
+func (e *HorizonUnreachableError) Unwrap() error { return e.Err }
+
+// HorizonStatusError indicates Horizon returned a non-2xx HTTP status. The
+// StatusCode lets callers distinguish a missing account (404) from a server
+// failure (5xx).
+type HorizonStatusError struct {
+	// URL is the Horizon endpoint that was queried.
+	URL string
+	// StatusCode is the HTTP status returned by Horizon.
+	StatusCode int
+	// Body is a truncated copy of the response body, if any.
+	Body string
+}
+
+func (e *HorizonStatusError) Error() string {
+	return fmt.Sprintf("stellar: horizon returned %d: %s", e.StatusCode, e.Body)
 }
 
 // GetAccount fetches an account and all of its balances from Horizon.
@@ -178,16 +215,20 @@ func (c *Client) GetAccount(ctx context.Context, address string) (*Account, erro
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("stellar: horizon request: %w", err)
+		return nil, &HorizonUnreachableError{URL: c.horizonURL, Err: err}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, &AccountNotFoundError{Address: address}
+		return nil, &AccountNotFoundError{Address: address, Network: c.network}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("stellar: horizon returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, &HorizonStatusError{
+			URL:        c.horizonURL,
+			StatusCode: resp.StatusCode,
+			Body:       strings.TrimSpace(string(body)),
+		}
 	}
 
 	var acct accountResponse

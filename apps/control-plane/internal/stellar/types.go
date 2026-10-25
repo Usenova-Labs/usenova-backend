@@ -37,4 +37,10 @@ type ErrorResponse struct {
 	Error   string `json:"error"`
 	Message string `json:"message,omitempty"`
 	Code    int    `json:"code,omitempty"`
+	// Network is the configured Stellar network for stellar-related errors.
+	Network string `json:"network,omitempty"`
+	// HorizonURL and HorizonStatus expose upstream Horizon details so clients
+	// can present a clear, actionable message.
+	HorizonURL    string `json:"horizon_url,omitempty"`
+	HorizonStatus int    `json:"horizon_status,omitempty"`
 }
