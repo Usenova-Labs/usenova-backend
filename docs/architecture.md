@@ -169,12 +169,19 @@ operator ──enqueue──▶ CP queue ──poll──▶ agent ──execute
 1. Agent starts and detects its machine inventory (best-effort):
    OS, architecture, CPU count, total memory, Docker engine version
 2. Agent registers with the Control Plane, reporting the inventory
-3. Control Plane stores the inventory with the agent record
+3. Control Plane stores the inventory with the agent record, along with
+   ownership (`user` for BYOI or `platform` for the Usenova fleet) and optional
+   fleet owner ID/labels
 4. Every heartbeat refreshes the inventory, so dynamic values (e.g. a Docker
    engine upgrade) stay current without re-registering
 5. Control Plane returns the inventory on
-   GET /api/v1/agents and GET /api/v1/agents/{agent_id}
+   GET /api/v1/agents and GET /api/v1/agents/{agent_id}; the list endpoint can
+   filter by ownership and labels
 ```
+
+BYOI registration always creates `owner_type = user`. Platform ownership is
+only granted through the separate platform registration endpoint, which
+requires the control plane's platform bootstrap token.
 
 The inventory is optional on the wire: agents that do not report it keep
 registering successfully, and the control plane stores an empty inventory for

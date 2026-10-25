@@ -2,6 +2,21 @@ package agent
 
 import "encoding/json"
 
+// OwnerType identifies who operates an agent.
+type OwnerType string
+
+const (
+	// OwnerTypeUser is the default: a BYOI agent operated by its owner.
+	OwnerTypeUser OwnerType = "user"
+	// OwnerTypePlatform marks an agent that belongs to the Usenova fleet.
+	OwnerTypePlatform OwnerType = "platform"
+)
+
+// Valid reports whether the owner type is known.
+func (t OwnerType) Valid() bool {
+	return t == OwnerTypeUser || t == OwnerTypePlatform
+}
+
 // RegisterRequest represents the request body for agent registration
 type RegisterRequest struct {
 	AgentID      string            `json:"agent_id,omitempty"`
@@ -11,6 +26,12 @@ type RegisterRequest struct {
 	// System is the machine inventory reported by the agent. It is optional
 	// so agents that predate the inventory keep registering successfully.
 	System *AgentSystemInfo `json:"system,omitempty"`
+
+	// Ownership metadata is only honored on the platform registration
+	// endpoint. The default registration endpoint always creates user agents.
+	OwnerType OwnerType         `json:"owner_type,omitempty"`
+	OwnerID   string            `json:"owner_id,omitempty"`
+	Labels    map[string]string `json:"labels,omitempty"`
 }
 
 // RegisterResponse represents the response for agent registration

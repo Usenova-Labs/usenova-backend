@@ -72,6 +72,18 @@ Registered agents show up on `GET /api/v1/agents`:
 curl -s http://127.0.0.1:8080/api/v1/agents
 ```
 
+BYOI agents are registered with `owner_type: "user"` by default. Fleet
+metadata is only accepted on the platform endpoint, which requires the
+control plane to be started with a separate bootstrap token:
+
+```bash
+CONTROL_PLANE_PLATFORM_TOKEN=platform-secret ./bin/nova-control
+curl -s 'http://127.0.0.1:8080/api/v1/agents?owner_type=platform&label=region=us-east'
+```
+
+See [apps/control-plane/README.md](../apps/control-plane/README.md) for the
+platform registration request.
+
 ## 3. Start the agent
 
 The agent needs the control plane URL, a token and — for the `nova` CLI — a loopback API address
@@ -94,9 +106,13 @@ HEARTBEAT_INTERVAL=30s \
 | `API_TOKEN` | with `API_ADDR` | Bearer token the CLI must send (`--token` / `NOVA_API_TOKEN` / `USENOVA_API_TOKEN`) |
 | `AGENT_ID` | no | Stable agent id, generated when unset |
 | `HEARTBEAT_INTERVAL` | no | Heartbeat period, `30s` by default |
+| `PLATFORM_BOOTSTRAP_TOKEN` | no | Selects platform registration; must match `CONTROL_PLANE_PLATFORM_TOKEN` |
+| `PLATFORM_OWNER_ID` | no | Optional fleet owner id reported by a platform agent |
+| `PLATFORM_LABELS` | no | Optional comma-separated fleet tags, e.g. `region=us-east,pool=alpha` |
 
 Registration is fatal: the agent retries three times (5s apart) and exits when the control plane is
-unreachable.
+unreachable. Leave the platform variables unset for the normal BYOI path; the agent then registers
+with `owner_type: "user"`.
 
 Point the CLI at the agent:
 

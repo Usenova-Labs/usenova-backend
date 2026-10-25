@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,12 @@ type Config struct {
 	AgentID           string
 	HeartbeatInterval time.Duration
 	Version           string
+
+	// PlatformBootstrapToken selects the platform registration path when set.
+	// PlatformOwnerID and PlatformLabels are fleet metadata reported with it.
+	PlatformBootstrapToken string
+	PlatformOwnerID        string
+	PlatformLabels         map[string]string
 
 	// CommandPollInterval is how often the agent asks the control plane for
 	// pending commands.
@@ -72,6 +79,19 @@ func Load(version string) (*Config, error) {
 	if config.AgentID == "" {
 		// Generate a new UUID for this agent
 		config.AgentID = uuid.New().String()
+	}
+
+	// Optional: platform registration. A dedicated bootstrap token selects
+	// the platform path; without it the agent registers as a BYOI agent.
+	config.PlatformBootstrapToken = os.Getenv("PLATFORM_BOOTSTRAP_TOKEN")
+	config.PlatformOwnerID = os.Getenv("PLATFORM_OWNER_ID")
+	labels, err := labelsEnv("PLATFORM_LABELS")
+	if err != nil {
+		return nil, err
+	}
+	config.PlatformLabels = labels
+	if config.PlatformBootstrapToken == "" && (config.PlatformOwnerID != "" || len(config.PlatformLabels) > 0) {
+		return nil, fmt.Errorf("PLATFORM_BOOTSTRAP_TOKEN is required when PLATFORM_OWNER_ID or PLATFORM_LABELS is set")
 	}
 
 	// Optional: Heartbeat interval (default: 30s)
@@ -145,6 +165,29 @@ func Load(version string) (*Config, error) {
 	return config, nil
 }
 
+// labelsEnv parses comma-separated key=value labels from the environment.
+func labelsEnv(name string) (map[string]string, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return nil, nil
+	}
+
+	labels := make(map[string]string)
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(pair, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("invalid %s format: %s (use comma-separated key=value pairs)", name, raw)
+		}
+		labels[key] = strings.TrimSpace(value)
+	}
+	return labels, nil
+}
+
 // durationEnv reads a duration from the environment. It accepts a duration
 // string ("30s", "1m") or a plain number of seconds.
 func durationEnv(name string, def time.Duration) (time.Duration, error) {
@@ -167,7 +210,11 @@ func (c *Config) String() string {
 	if c.APIAddr != "" {
 		api = c.APIAddr
 	}
-	return fmt.Sprintf("Config{ControlPlaneURL=%s, AgentID=%s, HeartbeatInterval=%v, Version=%s, API=%s, Restarts=%d/%v backoff=%v}",
-		c.ControlPlaneURL, c.AgentID, c.HeartbeatInterval, c.Version, api,
+	registration := "user"
+	if c.PlatformBootstrapToken != "" {
+		registration = "platform"
+	}
+	return fmt.Sprintf("Config{ControlPlaneURL=%s, AgentID=%s, HeartbeatInterval=%v, Version=%s, Registration=%s, API=%s, Restarts=%d/%v backoff=%v}",
+		c.ControlPlaneURL, c.AgentID, c.HeartbeatInterval, c.Version, registration, api,
 		c.RestartMaxRestarts, c.RestartWindow, c.RestartBackoff)
 }

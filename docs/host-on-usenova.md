@@ -151,6 +151,8 @@ The project is actively working on:
 1. Proving the BYOI path end-to-end (agent, CLI, control plane, Docker).
 2. Stellar testnet integration (account linking, balance queries, escrow).
 3. Hardening: session auth, circuit breaker, command channel reliability.
+4. Fleet primitives: the agent registry now records user vs platform
+   ownership, optional owner IDs, and filterable fleet labels.
 
 Host-on-Usenova work will begin once the BYOI path is stable and the escrow
 contract has been reviewed. Contributions to the items above are the fastest

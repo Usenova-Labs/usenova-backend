@@ -36,6 +36,7 @@ type Agent struct {
 // New creates a new agent instance
 func New(cfg *config.Config, log *logrus.Logger) *Agent {
 	controlPlaneClient := controlplane.NewClient(cfg.ControlPlaneURL, cfg.AgentToken, log)
+	controlPlaneClient.SetPlatformRegistration(cfg.PlatformBootstrapToken, cfg.PlatformOwnerID, cfg.PlatformLabels)
 
 	// Docker client. Failure here is non-fatal: the daemon may simply not be
 	// running yet; capability detection and deploys will report/handle it.

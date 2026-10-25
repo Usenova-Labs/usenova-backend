@@ -118,6 +118,50 @@ func TestClient_Register(t *testing.T) {
 	}
 }
 
+func TestClient_RegisterPlatform(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	var gotPath, gotBootstrapToken, gotAuthorization string
+	var gotRequest RegisterRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotBootstrapToken = r.Header.Get("X-Platform-Bootstrap-Token")
+		gotAuthorization = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&gotRequest); err != nil {
+			t.Errorf("Failed to decode request: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(RegisterResponse{AgentID: "platform-1", SessionToken: "session-abc"})
+	}))
+	defer server.Close()
+
+	labels := map[string]string{"region": "us-east", "pool": "alpha"}
+	client := NewClient(server.URL, "test-token", log)
+	client.SetPlatformRegistration("platform-secret", "fleet-1", labels)
+
+	if _, err := client.Register(context.Background(), "platform-1", "1.0.0"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if gotPath != "/api/v1/agents/register/platform" {
+		t.Errorf("path = %q, want platform registration path", gotPath)
+	}
+	if gotBootstrapToken != "platform-secret" {
+		t.Errorf("platform bootstrap token = %q, want platform-secret", gotBootstrapToken)
+	}
+	if gotAuthorization != "Bearer test-token" {
+		t.Errorf("Authorization = %q, want agent token", gotAuthorization)
+	}
+	if gotRequest.OwnerID != "fleet-1" {
+		t.Errorf("owner ID = %q, want fleet-1", gotRequest.OwnerID)
+	}
+	if gotRequest.Labels["region"] != "us-east" || gotRequest.Labels["pool"] != "alpha" {
+		t.Errorf("labels = %v", gotRequest.Labels)
+	}
+}
+
 func TestClient_Register_ReportsDockerVersion(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)

@@ -38,6 +38,9 @@ type RegisterRequest struct {
 	// agents that do not report it yet stay compatible with the control
 	// plane.
 	System *AgentSystemInfo `json:"system,omitempty"`
+	// Ownership metadata is sent on the platform registration endpoint.
+	OwnerID string            `json:"owner_id,omitempty"`
+	Labels  map[string]string `json:"labels,omitempty"`
 }
 
 // RegisterResponse is received after successful registration

@@ -20,9 +20,10 @@ is contained to the bootstrap code in
 
 ## Configuration
 
-| Variable                | Default               | Description                              |
-| ----------------------- | --------------------- | ---------------------------------------- |
-| `CONTROL_PLANE_DB_PATH` | `data/control-plane.db` | Path to the SQLite database file.        |
+| Variable                       | Default                 | Description                                      |
+| ------------------------------ | ----------------------- | ------------------------------------------------ |
+| `CONTROL_PLANE_DB_PATH`        | `data/control-plane.db` | Path to the SQLite database file.                |
+| `CONTROL_PLANE_PLATFORM_TOKEN` | unset                   | Bootstrap token for the platform registration API. |
 
 The parent directory is created on startup if it does not exist. The `*.db`
 pattern is already gitignored.
@@ -42,6 +43,9 @@ CREATE TABLE IF NOT EXISTS agents (
     hostname          TEXT NOT NULL,
     version           TEXT NOT NULL,
     capabilities      TEXT NOT NULL DEFAULT '{}',
+    owner_type        TEXT NOT NULL DEFAULT 'user',
+    owner_id          TEXT NOT NULL DEFAULT '',
+    labels            TEXT NOT NULL DEFAULT '{}',
     last_heartbeat    TEXT NOT NULL,
     registration_time TEXT NOT NULL,
     session_token     TEXT NOT NULL
@@ -49,6 +53,9 @@ CREATE TABLE IF NOT EXISTS agents (
 ```
 
 - `capabilities` is JSON (currently `{"docker": bool}`).
+- `owner_type` is `user` (BYOI, the default) or `platform` (Usenova fleet).
+- `owner_id` is optional fleet ownership metadata and may be empty.
+- `labels` is a JSON object of fleet tags, such as `{"region": "us-east"}`.
 - `last_heartbeat` and `registration_time` are RFC3339 timestamps.
 - Last reported status (uptime, running services) is intentionally **not**
   stored: it is ephemeral and refreshed by the agent's next heartbeat.
@@ -71,24 +78,28 @@ inside the binary — no loose SQL files are needed at deploy time.
 ### Adding schema changes later
 
 - **New tables**: add them to `schema.sql` with `CREATE TABLE IF NOT EXISTS`;
-  the startup bootstrap creates them on the next launch. This is the only
-  change `CREATE TABLE IF NOT EXISTS` can express.
+  the startup bootstrap creates them on the next launch.
 - **Changes to an existing table** (adding/altering columns, constraints):
   re-running `CREATE TABLE IF NOT EXISTS` never alters a table that already
-  exists, and SQLite has no `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. Such
-  changes need an explicit versioned migration: introduce a
+  exists, and SQLite has no `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
+  `Migrate` therefore inspects `PRAGMA table_info(agents)` and adds the
+  ownership columns when they are missing. Existing rows default to
+  `owner_type = 'user'`, an empty `owner_id`, and `{}` labels. Further schema
+  changes that cannot be expressed as additive columns should introduce a
   `schema_migrations` version table (or a numbered `migrations/` directory)
-  applied by `Migrate` in `db.go`. The bootstrap entry point stays the same.
+  applied by `Migrate` in `db.go`.
 
 ## Restart behavior
 
-- Registered agents (id, hostname, version, capabilities, session token,
-  registration time, last heartbeat) are reloaded before the API accepts
-  traffic — the registry survives control-plane restarts.
+- Registered agents (id, hostname, version, capabilities, owner type, owner
+  ID, labels, session token, registration time, last heartbeat) are reloaded
+  before the API accepts traffic — the registry survives control-plane
+  restarts.
 - `status` on an agent resets to zero until its next heartbeat.
-- The HTTP API is unchanged: `POST /api/v1/agents/register`,
-  `POST /api/v1/agents/:agentID/heartbeat`, `GET /api/v1/agents`, and
-  `GET /api/v1/agents/:agentID` behave exactly as before.
+- Existing BYOI registration and agent-scoped endpoints keep their previous
+  behavior. Platform agents additionally use
+  `POST /api/v1/agents/register/platform`, and `GET /api/v1/agents` supports
+  ownership/label filters.
 
 ## Resetting the registry
 

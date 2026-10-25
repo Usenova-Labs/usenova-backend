@@ -55,8 +55,10 @@ func (s *Server) setupRoutes() {
 		agents := v1.Group("/agents")
 		{
 			// Registration is unauthenticated: this is where the session
-			// token is first issued.
+			// token is first issued. The platform path additionally requires
+			// the platform bootstrap token; BYOI agents use /register.
 			agents.POST("/register", s.agentHandler.RegisterAgent)
+			agents.POST("/register/platform", s.agentHandler.RegisterPlatformAgent)
 
 			// Agent-scoped routes require the bearer session token issued at
 			// registration.

@@ -43,10 +43,22 @@ type Agent struct {
 	Version          string            `json:"version"`
 	Capabilities     AgentCapabilities `json:"capabilities"`
 	System           AgentSystemInfo   `json:"system"`
+	OwnerType        OwnerType         `json:"owner_type"`
+	OwnerID          string            `json:"owner_id,omitempty"`
+	Labels           map[string]string `json:"labels,omitempty"`
 	LastHeartbeat    time.Time         `json:"last_heartbeat"`
 	RegistrationTime time.Time         `json:"registration_time"`
 	Status           AgentStatus       `json:"status,omitempty"`
 	SessionToken     string            `json:"session_token,omitempty"`
+}
+
+// AgentFilter narrows the agents returned by ListAgentsFiltered. Zero values
+// match every agent. Labels are matched exactly and all supplied labels must
+// be present.
+type AgentFilter struct {
+	OwnerType OwnerType
+	OwnerID   string
+	Labels    map[string]string
 }
 
 // AgentStatus represents current agent status information
@@ -92,6 +104,11 @@ type AgentRegistration struct {
 	// System describes the machine the agent runs on. It is empty for
 	// agents that do not report an inventory.
 	System AgentSystemInfo
+	// OwnerType defaults to user when empty.
+	OwnerType OwnerType
+	// OwnerID and Labels are fleet metadata for platform-owned agents.
+	OwnerID string
+	Labels  map[string]string
 }
 
 // NewPersistentAgentStore creates an AgentStore backed by SQLite. It loads
@@ -115,7 +132,8 @@ func NewPersistentAgentStore(db *sql.DB) (*AgentStore, error) {
 // load hydrates the in-memory registry from the persisted agents table.
 func (s *AgentStore) load() error {
 	rows, err := s.db.Query(`
-		SELECT agent_id, hostname, version, capabilities, last_heartbeat, registration_time, session_token
+		SELECT agent_id, hostname, version, capabilities, owner_type, owner_id, labels,
+		       last_heartbeat, registration_time, session_token
 		FROM agents`)
 	if err != nil {
 		return fmt.Errorf("load persisted agents: %w", err)
@@ -128,12 +146,15 @@ func (s *AgentStore) load() error {
 			hostname     string
 			version      string
 			capabilities string
+			ownerType    string
+			ownerID      string
+			labels       string
 			lastBeat     string
 			registered   string
 			sessionToken string
 		)
 
-		if err := rows.Scan(&agentID, &hostname, &version, &capabilities, &lastBeat, &registered, &sessionToken); err != nil {
+		if err := rows.Scan(&agentID, &hostname, &version, &capabilities, &ownerType, &ownerID, &labels, &lastBeat, &registered, &sessionToken); err != nil {
 			return fmt.Errorf("scan persisted agent: %w", err)
 		}
 
@@ -151,14 +172,27 @@ func (s *AgentStore) load() error {
 			return fmt.Errorf("parse capabilities for agent %q: %w", agentID, err)
 		}
 
+		var agentLabels map[string]string
+		if labels != "" {
+			if err := json.Unmarshal([]byte(labels), &agentLabels); err != nil {
+				return fmt.Errorf("parse labels for agent %q: %w", agentID, err)
+			}
+		}
+
 		agent := &Agent{
 			AgentID:          agentID,
 			Hostname:         hostname,
 			Version:          version,
 			Capabilities:     caps,
+			OwnerType:        OwnerType(ownerType),
+			OwnerID:          ownerID,
+			Labels:           agentLabels,
 			LastHeartbeat:    lastHeartbeat,
 			RegistrationTime: registrationTime,
 			SessionToken:     sessionToken,
+		}
+		if agent.OwnerType == "" {
+			agent.OwnerType = OwnerTypeUser
 		}
 		s.agents[agentID] = agent
 		if sessionToken != "" {
@@ -178,6 +212,14 @@ func (s *AgentStore) RegisterAgent(reg AgentRegistration) (*Agent, error) {
 	defer s.mu.Unlock()
 
 	now := time.Now()
+
+	ownerType := reg.OwnerType
+	if ownerType == "" {
+		ownerType = OwnerTypeUser
+	}
+	if !ownerType.Valid() {
+		return nil, ErrInvalidOwnerType
+	}
 
 	// Generate agent ID if not provided.
 	agentID := reg.AgentID
@@ -199,6 +241,9 @@ func (s *AgentStore) RegisterAgent(reg AgentRegistration) (*Agent, error) {
 		Version:          reg.Version,
 		Capabilities:     reg.Capabilities,
 		System:           reg.System,
+		OwnerType:        ownerType,
+		OwnerID:          reg.OwnerID,
+		Labels:           reg.Labels,
 		RegistrationTime: now,
 		LastHeartbeat:    now,
 		SessionToken:     sessionToken,
@@ -238,14 +283,25 @@ func (s *AgentStore) persistRegistration(a *Agent) error {
 	if err != nil {
 		return fmt.Errorf("marshal capabilities: %w", err)
 	}
+	agentLabels := a.Labels
+	if agentLabels == nil {
+		agentLabels = map[string]string{}
+	}
+	labels, err := json.Marshal(agentLabels)
+	if err != nil {
+		return fmt.Errorf("marshal labels: %w", err)
+	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO agents (agent_id, hostname, version, capabilities, last_heartbeat, registration_time, session_token)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO agents (agent_id, hostname, version, capabilities, owner_type, owner_id, labels, last_heartbeat, registration_time, session_token)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(agent_id) DO UPDATE SET
 			hostname         = excluded.hostname,
 			version          = excluded.version,
 			capabilities     = excluded.capabilities,
+			owner_type       = excluded.owner_type,
+			owner_id         = excluded.owner_id,
+			labels           = excluded.labels,
 			last_heartbeat   = excluded.last_heartbeat,
 			registration_time = excluded.registration_time,
 			session_token    = excluded.session_token`,
@@ -253,6 +309,9 @@ func (s *AgentStore) persistRegistration(a *Agent) error {
 		a.Hostname,
 		a.Version,
 		string(capabilities),
+		string(a.OwnerType),
+		a.OwnerID,
+		string(labels),
 		a.LastHeartbeat.Format(time.RFC3339Nano),
 		a.RegistrationTime.Format(time.RFC3339Nano),
 		a.SessionToken,
@@ -360,17 +419,40 @@ func (s *AgentStore) GetAgent(agentID string) (*Agent, error) {
 	return agent, nil
 }
 
-// ListAgents returns all registered agents
+// ListAgents returns all registered agents.
 func (s *AgentStore) ListAgents() []*Agent {
+	return s.ListAgentsFiltered(AgentFilter{})
+}
+
+// ListAgentsFiltered returns the registered agents matching filter.
+func (s *AgentStore) ListAgentsFiltered(filter AgentFilter) []*Agent {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	agents := make([]*Agent, 0, len(s.agents))
 	for _, agent := range s.agents {
+		if !agentMatchesFilter(agent, filter) {
+			continue
+		}
 		agents = append(agents, agent)
 	}
 
 	return agents
+}
+
+func agentMatchesFilter(agent *Agent, filter AgentFilter) bool {
+	if filter.OwnerType != "" && agent.OwnerType != filter.OwnerType {
+		return false
+	}
+	if filter.OwnerID != "" && agent.OwnerID != filter.OwnerID {
+		return false
+	}
+	for key, want := range filter.Labels {
+		if got, ok := agent.Labels[key]; !ok || got != want {
+			return false
+		}
+	}
+	return true
 }
 
 // DeleteAgent removes an agent from the store
@@ -405,6 +487,9 @@ var (
 	// ErrTokenForOtherAgent is returned when a valid session token is presented
 	// for an agent other than the one it was issued to.
 	ErrTokenForOtherAgent = &AgentError{"session token does not match agent"}
+	// ErrInvalidOwnerType is returned when a registration carries an unknown
+	// owner type.
+	ErrInvalidOwnerType = &AgentError{"invalid owner type"}
 )
 
 // AgentError represents agent-related errors
