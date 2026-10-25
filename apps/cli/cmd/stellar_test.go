@@ -292,3 +292,46 @@ func TestStellarBalanceControlPlaneUnreachable(t *testing.T) {
 		t.Errorf("error = %v, want it to mention the control plane at %s", err, controlPlaneAddr)
 	}
 }
+
+func TestStellarBalanceGenericGatewayError(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			_, err := runStellarBalance(t, "text", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error":   "Failed to fetch balance from network",
+					"message": "provider unavailable",
+				})
+			})
+
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if strings.Contains(err.Error(), "Could not reach Stellar Horizon") {
+				t.Errorf("generic gateway error reported as Horizon-unreachable: %v", err)
+			}
+			if !strings.Contains(err.Error(), "control plane error") {
+				t.Errorf("error = %v, want plain control-plane error", err)
+			}
+		})
+	}
+}
+
+func TestStellarBalanceUsesControlPlaneNetworkForHorizonFallback(t *testing.T) {
+	t.Setenv("STELLAR_NETWORK", "testnet")
+	t.Setenv("STELLAR_HORIZON_URL", "https://horizon-testnet.example")
+
+	_, err := runStellarBalance(t, "text", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":   "Failed to fetch balance from network",
+			"message": "stellar: horizon request: connection refused",
+			"network": "mainnet",
+		})
+	})
+
+	want := "Could not reach Stellar Horizon at https://horizon.stellar.org. Check your network or try again later."
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+}

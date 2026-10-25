@@ -189,14 +189,19 @@ func newStellarBalanceError(address string, err error) *stellarBalanceError {
 	}
 
 	network := stellarNetworkFromEnv()
-	horizonURL := stellarHorizonURL(network)
 	if apiErr.Network != "" {
 		network = apiErr.Network
 	}
-	if apiErr.HorizonURL != "" {
-		horizonURL = apiErr.HorizonURL
-	} else if u := horizonURLFromMessage(apiErr.Title + " " + apiErr.Message); u != "" {
-		horizonURL = u
+
+	// Prefer endpoint metadata from the control plane; the CLI's environment
+	// may describe a different network. Only fall back to the local
+	// configuration when the response omits the Horizon URL entirely.
+	horizonURL := apiErr.HorizonURL
+	if horizonURL == "" {
+		horizonURL = horizonURLFromMessage(apiErr.Title + " " + apiErr.Message)
+	}
+	if horizonURL == "" {
+		horizonURL = stellarHorizonURL(network)
 	}
 
 	base := &stellarBalanceError{
@@ -221,17 +226,12 @@ func newStellarBalanceError(address string, err error) *stellarBalanceError {
 		return newHorizonStatusError(base, status)
 	}
 
-	// Only treat the control-plane gateway status as an unreachable hint when
-	// the envelope does not tell us what Horizon actually returned. A known
-	// non-5xx Horizon status means Horizon answered (e.g. 429), not that it was
-	// unreachable.
-	if status == 0 {
-		if indicatesHorizonUnreachable(detail) ||
-			apiErr.StatusCode == http.StatusBadGateway ||
-			apiErr.StatusCode == http.StatusServiceUnavailable ||
-			apiErr.StatusCode == http.StatusGatewayTimeout {
-			return newHorizonUnreachableError(base)
-		}
+	// Only classify as unreachable when the control plane identifies the
+	// Horizon endpoint or the message carries a network-failure phrase. A bare
+	// 502/503/504 is a generic control-plane/provider failure: reporting it as
+	// Horizon-unreachable would point users at the wrong service.
+	if status == 0 && (apiErr.HorizonURL != "" || indicatesHorizonUnreachable(detail)) {
+		return newHorizonUnreachableError(base)
 	}
 
 	base.Kind = "control_plane_error"
@@ -271,9 +271,14 @@ func stellarNetworkFromEnv() string {
 }
 
 // stellarHorizonURL mirrors the Stellar package's env-driven Horizon default.
+// The environment override is only trusted when it belongs to the same network
+// as the control plane's response; otherwise use that network's canonical
+// endpoint.
 func stellarHorizonURL(network string) string {
-	if h := strings.TrimSpace(os.Getenv("STELLAR_HORIZON_URL")); h != "" {
-		return strings.TrimRight(h, "/")
+	if stellarNetworkFromEnv() == network {
+		if h := strings.TrimSpace(os.Getenv("STELLAR_HORIZON_URL")); h != "" {
+			return strings.TrimRight(h, "/")
+		}
 	}
 	switch network {
 	case "mainnet":
