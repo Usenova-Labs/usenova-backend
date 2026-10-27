@@ -20,6 +20,9 @@ The agent is configured via environment variables:
 | `CONTROL_PLANE_URL` | Yes | - | Control Plane API endpoint |
 | `AGENT_TOKEN` | Yes | - | Authentication token |
 | `AGENT_ID` | No | auto-generated | Unique agent identifier |
+| `PLATFORM_BOOTSTRAP_TOKEN` | No | - | Registers with the platform endpoint instead of BYOI; must match the control plane token |
+| `PLATFORM_OWNER_ID` | No | - | Optional fleet owner identifier |
+| `PLATFORM_LABELS` | No | - | Optional comma-separated `key=value` fleet tags |
 | `HEARTBEAT_INTERVAL` | No | `30s` | Heartbeat frequency |
 | `COMMAND_POLL_INTERVAL` | No | `10s` | How often the agent asks the Control Plane for pending commands |
 | `RESTART_MAX_RESTARTS` | No | `3` | Restarts allowed per window before a service is failed (`0` = unlimited) |

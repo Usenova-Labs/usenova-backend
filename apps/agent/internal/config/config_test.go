@@ -176,6 +176,53 @@ func TestLoad(t *testing.T) {
 	})
 }
 
+func TestLoadPlatformRegistration(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+	t.Setenv("AGENT_TOKEN", "test-token")
+	t.Setenv("PLATFORM_BOOTSTRAP_TOKEN", "platform-secret")
+	t.Setenv("PLATFORM_OWNER_ID", "fleet-1")
+	t.Setenv("PLATFORM_LABELS", "region=us-east, pool=alpha")
+
+	cfg, err := Load("test-version")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if cfg.PlatformBootstrapToken != "platform-secret" {
+		t.Errorf("PlatformBootstrapToken = %q, want platform-secret", cfg.PlatformBootstrapToken)
+	}
+	if cfg.PlatformOwnerID != "fleet-1" {
+		t.Errorf("PlatformOwnerID = %q, want fleet-1", cfg.PlatformOwnerID)
+	}
+	if cfg.PlatformLabels["region"] != "us-east" || cfg.PlatformLabels["pool"] != "alpha" {
+		t.Errorf("PlatformLabels = %v", cfg.PlatformLabels)
+	}
+}
+
+func TestLoadPlatformMetadataRequiresBootstrapToken(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+	t.Setenv("AGENT_TOKEN", "test-token")
+	t.Setenv("PLATFORM_BOOTSTRAP_TOKEN", "")
+	t.Setenv("PLATFORM_OWNER_ID", "fleet-1")
+	t.Setenv("PLATFORM_LABELS", "")
+
+	if _, err := Load("test-version"); err == nil {
+		t.Error("Expected error when platform metadata is set without PLATFORM_BOOTSTRAP_TOKEN")
+	}
+}
+
+func TestLoadRejectsInvalidPlatformLabels(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+	t.Setenv("AGENT_TOKEN", "test-token")
+	t.Setenv("PLATFORM_BOOTSTRAP_TOKEN", "platform-secret")
+	t.Setenv("PLATFORM_OWNER_ID", "")
+	t.Setenv("PLATFORM_LABELS", "missing-equals")
+
+	if _, err := Load("test-version"); err == nil {
+		t.Error("Expected error for invalid PLATFORM_LABELS")
+	}
+}
+
 func TestLoadRestartPolicy(t *testing.T) {
 	cleanup := func() {
 		os.Unsetenv("RESTART_MAX_RESTARTS")

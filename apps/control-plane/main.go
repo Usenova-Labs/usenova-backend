@@ -52,8 +52,13 @@ func main() {
 		"agents": len(agentStore.ListAgents()),
 	}).Info("Agent registry initialized")
 
-	// Initialize agent handler
-	agentHandler := agent.NewHandler(agentStore, log)
+	// Initialize agent handler. Platform registration is disabled unless a
+	// dedicated bootstrap token is configured, so BYOI stays the default.
+	platformToken := os.Getenv("CONTROL_PLANE_PLATFORM_TOKEN")
+	if platformToken == "" {
+		log.Warn("CONTROL_PLANE_PLATFORM_TOKEN is not set: platform registration is disabled")
+	}
+	agentHandler := agent.NewHandlerWithPlatformToken(agentStore, platformToken, log)
 
 	// Command channel. Operators enqueue commands with the operator token;
 	// agents claim them with their session token. Without an operator token
@@ -89,6 +94,7 @@ func main() {
 		log.Info("Available endpoints:")
 		log.Info("  GET  /health")
 		log.Info("  POST /api/v1/agents/register")
+		log.Info("  POST /api/v1/agents/register/platform        (platform token)")
 		log.Info("  POST /api/v1/agents/:agentID/heartbeat")
 		log.Info("  GET  /api/v1/agents")
 		log.Info("  GET  /api/v1/agents/:agentID")

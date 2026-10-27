@@ -39,6 +39,94 @@ func TestOpenSQLite_BootstrapsSchemaIdempotently(t *testing.T) {
 	}
 }
 
+func TestMigrate_AddsOwnershipColumnsToExistingRegistry(t *testing.T) {
+	db, err := sql.Open(sqliteDriver, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	_, err = db.Exec(`
+		CREATE TABLE agents (
+			agent_id          TEXT PRIMARY KEY,
+			hostname          TEXT NOT NULL,
+			version           TEXT NOT NULL,
+			capabilities      TEXT NOT NULL DEFAULT '{}',
+			last_heartbeat    TEXT NOT NULL,
+			registration_time TEXT NOT NULL,
+			session_token     TEXT NOT NULL
+		)`)
+	if err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = db.Exec(`
+		INSERT INTO agents (agent_id, hostname, version, capabilities, last_heartbeat, registration_time, session_token)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-agent", "host-1", "1.0.0", "{}", now, now, "legacy-token",
+	)
+	if err != nil {
+		t.Fatalf("insert legacy agent: %v", err)
+	}
+
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store, err := NewPersistentAgentStore(db)
+	if err != nil {
+		t.Fatalf("NewPersistentAgentStore: %v", err)
+	}
+
+	agent, err := store.GetAgent("legacy-agent")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if agent.OwnerType != OwnerTypeUser {
+		t.Errorf("legacy agent owner type = %q, want %q", agent.OwnerType, OwnerTypeUser)
+	}
+	if agent.OwnerID != "" || len(agent.Labels) != 0 {
+		t.Errorf("legacy agent unexpectedly has fleet metadata: %+v", agent)
+	}
+}
+
+func TestPersistentAgentStore_PersistsOwnershipMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.db")
+
+	store, _ := openTestRegistry(t, path)
+	labels := map[string]string{"region": "us-east", "pool": "alpha"}
+	if _, err := store.RegisterAgent(AgentRegistration{
+		AgentID:   "platform-1",
+		Hostname:  "host-1",
+		Version:   "1.0.0",
+		OwnerType: OwnerTypePlatform,
+		OwnerID:   "fleet-1",
+		Labels:    labels,
+	}); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+
+	restarted, _ := openTestRegistry(t, path)
+	got, err := restarted.GetAgent("platform-1")
+	if err != nil {
+		t.Fatalf("GetAgent after restart: %v", err)
+	}
+
+	if got.OwnerType != OwnerTypePlatform || got.OwnerID != "fleet-1" {
+		t.Errorf("unexpected ownership after restart: %+v", got)
+	}
+	if len(got.Labels) != len(labels) {
+		t.Fatalf("labels after restart = %v, want %v", got.Labels, labels)
+	}
+	for key, want := range labels {
+		if got.Labels[key] != want {
+			t.Errorf("label %q = %q, want %q", key, got.Labels[key], want)
+		}
+	}
+}
+
 func TestPersistentAgentStore_SurvivesRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.db")
 

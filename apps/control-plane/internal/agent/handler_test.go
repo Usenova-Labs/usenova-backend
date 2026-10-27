@@ -12,6 +12,10 @@ import (
 )
 
 func newTestRouter(t *testing.T) *gin.Engine {
+	return newTestRouterWithPlatformToken(t, "")
+}
+
+func newTestRouterWithPlatformToken(t *testing.T, platformToken string) *gin.Engine {
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
@@ -19,11 +23,12 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
 
-	handler := NewHandler(NewAgentStore(), logger)
+	handler := NewHandlerWithPlatformToken(NewAgentStore(), platformToken, logger)
 
 	router := gin.New()
 	agents := router.Group("/api/v1/agents")
 	agents.POST("/register", handler.RegisterAgent)
+	agents.POST("/register/platform", handler.RegisterPlatformAgent)
 	agents.POST("/:agentID/heartbeat", handler.RequireAgentAuth(), handler.HandleHeartbeat)
 	agents.GET("", handler.ListAgents)
 	agents.GET("/:agentID", handler.RequireAgentAuth(), handler.GetAgent)
@@ -32,6 +37,11 @@ func newTestRouter(t *testing.T) *gin.Engine {
 }
 
 func doRequest(t *testing.T, router *gin.Engine, method, path string, body interface{}, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	return doRequestWithHeaders(t, router, method, path, body, token, nil)
+}
+
+func doRequestWithHeaders(t *testing.T, router *gin.Engine, method, path string, body interface{}, token string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 
 	var payload []byte
@@ -47,6 +57,9 @@ func doRequest(t *testing.T, router *gin.Engine, method, path string, body inter
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 
 	recorder := httptest.NewRecorder()
@@ -90,6 +103,18 @@ func registerAgent(t *testing.T, router *gin.Engine, req RegisterRequest) Regist
 	t.Helper()
 
 	recorder := doRequest(t, router, http.MethodPost, "/api/v1/agents/register", req, "")
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, recorder.Code, recorder.Body.String())
+	}
+	return decodeRegisterResponse(t, recorder)
+}
+
+func registerPlatformAgent(t *testing.T, router *gin.Engine, platformToken string, req RegisterRequest) RegisterResponse {
+	t.Helper()
+
+	recorder := doRequestWithHeaders(t, router, http.MethodPost, "/api/v1/agents/register/platform", req, "", map[string]string{
+		"X-Platform-Bootstrap-Token": platformToken,
+	})
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, recorder.Code, recorder.Body.String())
 	}
@@ -148,6 +173,252 @@ func TestRegisterAgent_WithoutSystemInfoStaysCompatible(t *testing.T) {
 	agent := decodeAgent(t, recorder)
 	if agent.System != (AgentSystemInfo{}) {
 		t.Errorf("expected an empty system info, got %+v", agent.System)
+	}
+}
+
+func TestRegisterAgent_DefaultsToUserOwnershipAndIgnoresSpoofedMetadata(t *testing.T) {
+	router := newTestRouter(t)
+
+	reg := registerAgent(t, router, RegisterRequest{
+		AgentID:   "agent-1",
+		Hostname:  "host-1",
+		Version:   "1.0.0",
+		OwnerType: OwnerTypePlatform,
+		OwnerID:   "spoofed-owner",
+		Labels:    map[string]string{"tier": "platform"},
+	})
+
+	recorder := doRequest(t, router, http.MethodGet, "/api/v1/agents/agent-1", nil, reg.SessionToken)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+
+	agent := decodeAgent(t, recorder)
+	if agent.OwnerType != OwnerTypeUser {
+		t.Errorf("owner type = %q, want %q", agent.OwnerType, OwnerTypeUser)
+	}
+	if agent.OwnerID != "" {
+		t.Errorf("owner ID = %q, want empty", agent.OwnerID)
+	}
+	if len(agent.Labels) != 0 {
+		t.Errorf("labels = %v, want empty", agent.Labels)
+	}
+}
+
+func TestRegisterPlatformAgent_RequiresBootstrapToken(t *testing.T) {
+	const platformToken = "platform-secret"
+	router := newTestRouterWithPlatformToken(t, platformToken)
+
+	req := RegisterRequest{AgentID: "platform-1", Hostname: "host-1", Version: "1.0.0"}
+	tests := []struct {
+		name  string
+		token string
+	}{
+		{name: "missing token"},
+		{name: "wrong token", token: "not-the-platform-token"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := doRequestWithHeaders(t, router, http.MethodPost, "/api/v1/agents/register/platform", req, "", map[string]string{
+				"X-Platform-Bootstrap-Token": tt.token,
+			})
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusUnauthorized, recorder.Code, recorder.Body.String())
+			}
+			if bytes.Contains(recorder.Body.Bytes(), []byte(platformToken)) {
+				t.Errorf("response leaked the platform token: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestRegisterPlatformAgent_DisabledWithoutConfiguredToken(t *testing.T) {
+	router := newTestRouter(t)
+
+	recorder := doRequestWithHeaders(t, router, http.MethodPost, "/api/v1/agents/register/platform", RegisterRequest{
+		AgentID:  "platform-1",
+		Hostname: "host-1",
+		Version:  "1.0.0",
+	}, "", map[string]string{
+		"X-Platform-Bootstrap-Token": "anything",
+	})
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRegisterPlatformAgent_RegistersFleetMetadata(t *testing.T) {
+	const platformToken = "platform-secret"
+	router := newTestRouterWithPlatformToken(t, platformToken)
+
+	labels := map[string]string{"region": "us-east", "pool": "alpha"}
+	reg := registerPlatformAgent(t, router, platformToken, RegisterRequest{
+		AgentID:   "platform-1",
+		Hostname:  "host-1",
+		Version:   "1.0.0",
+		OwnerType: OwnerTypeUser,
+		OwnerID:   "fleet-1",
+		Labels:    labels,
+	})
+
+	recorder := doRequest(t, router, http.MethodGet, "/api/v1/agents/platform-1", nil, reg.SessionToken)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+
+	agent := decodeAgent(t, recorder)
+	if agent.OwnerType != OwnerTypePlatform {
+		t.Errorf("owner type = %q, want %q", agent.OwnerType, OwnerTypePlatform)
+	}
+	if agent.OwnerID != "fleet-1" {
+		t.Errorf("owner ID = %q, want fleet-1", agent.OwnerID)
+	}
+	if len(agent.Labels) != len(labels) {
+		t.Fatalf("labels = %v, want %v", agent.Labels, labels)
+	}
+	for key, want := range labels {
+		if got := agent.Labels[key]; got != want {
+			t.Errorf("label %q = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestRegisterPlatformAgent_NormalizesLabels(t *testing.T) {
+	const platformToken = "platform-secret"
+	router := newTestRouterWithPlatformToken(t, platformToken)
+
+	reg := registerPlatformAgent(t, router, platformToken, RegisterRequest{
+		AgentID:  "platform-1",
+		Hostname: "host-1",
+		Version:  "1.0.0",
+		OwnerID:  "fleet-1",
+		Labels:   map[string]string{" region ": " us-east ", "pool": " alpha "},
+	})
+
+	recorder := doRequest(t, router, http.MethodGet, "/api/v1/agents/platform-1", nil, reg.SessionToken)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+
+	agent := decodeAgent(t, recorder)
+	if got := agent.Labels["region"]; got != "us-east" {
+		t.Errorf("region label = %q, want us-east", got)
+	}
+	if got := agent.Labels["pool"]; got != "alpha" {
+		t.Errorf("pool label = %q, want alpha", got)
+	}
+
+	recorder = doRequest(t, router, http.MethodGet, "/api/v1/agents?label=region=us-east&label=pool=alpha", nil, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	var resp AgentListResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode agent list: %v", err)
+	}
+	if resp.Total != 1 || resp.Agents[0].AgentID != "platform-1" {
+		t.Errorf("normalized labels did not match filters: %+v", resp.Agents)
+	}
+}
+
+func TestRegisterPlatformAgent_RejectsConflictingNormalizedLabels(t *testing.T) {
+	const platformToken = "platform-secret"
+	router := newTestRouterWithPlatformToken(t, platformToken)
+
+	recorder := doRequestWithHeaders(t, router, http.MethodPost, "/api/v1/agents/register/platform", RegisterRequest{
+		AgentID:  "platform-1",
+		Hostname: "host-1",
+		Version:  "1.0.0",
+		Labels:   map[string]string{"region": "us-east", " region ": "eu-west"},
+	}, "", map[string]string{
+		"X-Platform-Bootstrap-Token": platformToken,
+	})
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestListAgents_FiltersByOwnershipAndLabels(t *testing.T) {
+	const platformToken = "platform-secret"
+	router := newTestRouterWithPlatformToken(t, platformToken)
+
+	registerAgent(t, router, RegisterRequest{AgentID: "user-1", Hostname: "host-user", Version: "1.0.0"})
+	registerPlatformAgent(t, router, platformToken, RegisterRequest{
+		AgentID:  "platform-1",
+		Hostname: "host-p1",
+		Version:  "1.0.0",
+		OwnerID:  "fleet-a",
+		Labels:   map[string]string{"region": "us-east", "pool": "alpha"},
+	})
+	registerPlatformAgent(t, router, platformToken, RegisterRequest{
+		AgentID:  "platform-2",
+		Hostname: "host-p2",
+		Version:  "1.0.0",
+		OwnerID:  "fleet-a",
+		Labels:   map[string]string{"region": "eu-west", "pool": "beta"},
+	})
+
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{name: "all agents", want: []string{"user-1", "platform-1", "platform-2"}},
+		{name: "owner type", query: "?owner_type=platform", want: []string{"platform-1", "platform-2"}},
+		{name: "user owner type", query: "?owner_type=user", want: []string{"user-1"}},
+		{name: "owner id", query: "?owner_id=fleet-a", want: []string{"platform-1", "platform-2"}},
+		{name: "single label", query: "?label=region=us-east", want: []string{"platform-1"}},
+		{name: "all labels", query: "?label=region=us-east&label=pool=alpha", want: []string{"platform-1"}},
+		{name: "identical duplicate label", query: "?label=region=us-east&label=region=us-east", want: []string{"platform-1"}},
+		{name: "labels list", query: "?labels=region=us-east,pool=alpha", want: []string{"platform-1"}},
+		{name: "no match", query: "?label=region=us-east&label=pool=beta"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := doRequest(t, router, http.MethodGet, "/api/v1/agents"+tt.query, nil, "")
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusOK, recorder.Code, recorder.Body.String())
+			}
+
+			var resp AgentListResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("failed to decode agent list: %v", err)
+			}
+			if resp.Total != len(tt.want) {
+				t.Fatalf("total = %d, want %d (%+v)", resp.Total, len(tt.want), resp.Agents)
+			}
+
+			seen := make(map[string]bool)
+			for _, agent := range resp.Agents {
+				seen[agent.AgentID] = true
+			}
+			for _, id := range tt.want {
+				if !seen[id] {
+					t.Errorf("agent %q missing from filtered list", id)
+				}
+			}
+		})
+	}
+}
+
+func TestListAgents_RejectsInvalidFilters(t *testing.T) {
+	router := newTestRouter(t)
+
+	tests := []string{
+		"?owner_type=admin",
+		"?label=missing-equals",
+		"?label==value",
+		"?label=region=us-east&label=region=eu-west",
+	}
+	for _, query := range tests {
+		t.Run(query, func(t *testing.T) {
+			recorder := doRequest(t, router, http.MethodGet, "/api/v1/agents"+query, nil, "")
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }
 

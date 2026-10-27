@@ -46,6 +46,13 @@ type Client struct {
 	log        *logrus.Logger
 	startTime  time.Time
 
+	// Platform registration metadata. A non-empty platformBootstrapToken
+	// selects the platform endpoint; otherwise the agent uses BYOI
+	// registration and registers as a user-owned agent.
+	platformBootstrapToken string
+	platformOwnerID        string
+	platformLabels         map[string]string
+
 	// mu guards agentID and sessionToken, which are written on registration and
 	// read by concurrent heartbeat sends.
 	mu sync.RWMutex
@@ -131,6 +138,19 @@ func (c *Client) Register(ctx context.Context, agentID, version string) (*Regist
 		System:       &system,
 	}
 
+	endpoint := "/api/v1/agents/register"
+	headers := make(http.Header)
+
+	c.mu.RLock()
+	platformToken := c.platformBootstrapToken
+	request.OwnerID = c.platformOwnerID
+	request.Labels = c.platformLabels
+	c.mu.RUnlock()
+	if platformToken != "" {
+		endpoint = "/api/v1/agents/register/platform"
+		headers.Set("X-Platform-Bootstrap-Token", platformToken)
+	}
+
 	c.log.WithFields(logrus.Fields{
 		"agent_id":       agentID,
 		"hostname":       hostname,
@@ -141,10 +161,12 @@ func (c *Client) Register(ctx context.Context, agentID, version string) (*Regist
 		"cpu_count":      system.CPUCount,
 		"memory_bytes":   system.MemoryBytes,
 		"docker_version": system.DockerVersion,
+		"platform":       platformToken != "",
+		"owner_id":       request.OwnerID,
 	}).Info("Registering agent with control plane")
 
 	var response RegisterResponse
-	err = c.makeRequest(ctx, "POST", "/api/v1/agents/register", request, &response)
+	err = c.makeRequestWithHeaders(ctx, "POST", endpoint, request, &response, headers)
 	if err != nil {
 		return nil, fmt.Errorf("registration failed: %w", err)
 	}
@@ -265,6 +287,11 @@ func (c *Client) ReportCommandResult(ctx context.Context, result CommandResult) 
 
 // makeRequest is a helper function to make HTTP requests to the control plane
 func (c *Client) makeRequest(ctx context.Context, method, endpoint string, request, response interface{}) error {
+	return c.makeRequestWithHeaders(ctx, method, endpoint, request, response, nil)
+}
+
+// makeRequestWithHeaders is makeRequest with additional request headers.
+func (c *Client) makeRequestWithHeaders(ctx context.Context, method, endpoint string, request, response interface{}, headers http.Header) error {
 	url := c.baseURL + endpoint
 
 	// Marshal request body
@@ -287,6 +314,11 @@ func (c *Client) makeRequest(ctx context.Context, method, endpoint string, reque
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.authToken())
 	req.Header.Set("User-Agent", fmt.Sprintf("Usenova-Agent/1.0 (%s; %s)", runtime.GOOS, runtime.GOARCH))
+	for key, values := range headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 
 	// Make the request
 	resp, err := c.httpClient.Do(req)
@@ -318,6 +350,17 @@ func (c *Client) makeRequest(ctx context.Context, method, endpoint string, reque
 	}
 
 	return nil
+}
+
+// SetPlatformRegistration configures platform registration. A non-empty
+// bootstrapToken selects the platform endpoint; ownerID and labels are fleet
+// metadata sent with the registration. Call before Register.
+func (c *Client) SetPlatformRegistration(bootstrapToken, ownerID string, labels map[string]string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.platformBootstrapToken = bootstrapToken
+	c.platformOwnerID = ownerID
+	c.platformLabels = labels
 }
 
 // SetDockerDetector injects the Docker availability probe used during

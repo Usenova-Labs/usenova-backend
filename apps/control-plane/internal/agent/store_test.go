@@ -6,6 +6,105 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestRegisterAgent_DefaultsToUserOwnership(t *testing.T) {
+	s := NewAgentStore()
+
+	a, err := s.RegisterAgent(AgentRegistration{
+		AgentID:  "agent-1",
+		Hostname: "host-1",
+		Version:  "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if a.OwnerType != OwnerTypeUser {
+		t.Errorf("owner type = %q, want %q", a.OwnerType, OwnerTypeUser)
+	}
+}
+
+func TestRegisterAgent_RejectsInvalidOwnerType(t *testing.T) {
+	s := NewAgentStore()
+
+	_, err := s.RegisterAgent(AgentRegistration{
+		AgentID:   "agent-1",
+		Hostname:  "host-1",
+		Version:   "1.0.0",
+		OwnerType: OwnerType("admin"),
+	})
+	if err != ErrInvalidOwnerType {
+		t.Errorf("expected ErrInvalidOwnerType, got %v", err)
+	}
+}
+
+func TestRegisterAgent_StoresOwnershipMetadata(t *testing.T) {
+	s := NewAgentStore()
+
+	labels := map[string]string{"region": "us-east", "pool": "alpha"}
+	a, err := s.RegisterAgent(AgentRegistration{
+		AgentID:   "platform-1",
+		Hostname:  "host-1",
+		Version:   "1.0.0",
+		OwnerType: OwnerTypePlatform,
+		OwnerID:   "fleet-1",
+		Labels:    labels,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if a.OwnerType != OwnerTypePlatform || a.OwnerID != "fleet-1" {
+		t.Errorf("unexpected ownership: %+v", a)
+	}
+	if len(a.Labels) != len(labels) || a.Labels["region"] != "us-east" || a.Labels["pool"] != "alpha" {
+		t.Errorf("labels = %v, want %v", a.Labels, labels)
+	}
+}
+
+func TestListAgentsFiltered(t *testing.T) {
+	s := NewAgentStore()
+
+	registrations := []AgentRegistration{
+		{AgentID: "user-1", Hostname: "host-user", Version: "1.0.0"},
+		{AgentID: "platform-1", Hostname: "host-p1", Version: "1.0.0", OwnerType: OwnerTypePlatform, OwnerID: "fleet-a", Labels: map[string]string{"region": "us-east", "pool": "alpha"}},
+		{AgentID: "platform-2", Hostname: "host-p2", Version: "1.0.0", OwnerType: OwnerTypePlatform, OwnerID: "fleet-b", Labels: map[string]string{"region": "eu-west", "pool": "beta"}},
+	}
+	for _, reg := range registrations {
+		if _, err := s.RegisterAgent(reg); err != nil {
+			t.Fatalf("RegisterAgent(%q): %v", reg.AgentID, err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		filter AgentFilter
+		want   []string
+	}{
+		{name: "all", want: []string{"user-1", "platform-1", "platform-2"}},
+		{name: "owner type", filter: AgentFilter{OwnerType: OwnerTypePlatform}, want: []string{"platform-1", "platform-2"}},
+		{name: "owner id", filter: AgentFilter{OwnerID: "fleet-a"}, want: []string{"platform-1"}},
+		{name: "labels", filter: AgentFilter{Labels: map[string]string{"region": "us-east", "pool": "alpha"}}, want: []string{"platform-1"}},
+		{name: "no match", filter: AgentFilter{Labels: map[string]string{"region": "us-east", "pool": "beta"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agents := s.ListAgentsFiltered(tt.filter)
+			if len(agents) != len(tt.want) {
+				t.Fatalf("got %d agents, want %d", len(agents), len(tt.want))
+			}
+			seen := make(map[string]bool)
+			for _, agent := range agents {
+				seen[agent.AgentID] = true
+			}
+			for _, id := range tt.want {
+				if !seen[id] {
+					t.Errorf("agent %q missing", id)
+				}
+			}
+		})
+	}
+}
+
 func TestRegisterAgent_GeneratesUUIDWhenMissing(t *testing.T) {
 	s := NewAgentStore()
 

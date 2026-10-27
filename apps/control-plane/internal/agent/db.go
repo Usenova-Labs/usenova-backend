@@ -97,12 +97,72 @@ func ensurePrivateFile(path string) error {
 	return nil
 }
 
-// Migrate applies the embedded agent registry schema. It is idempotent
-// (CREATE TABLE IF NOT EXISTS), so calling it on an already-bootstrapped
-// database is a no-op.
+// Migrate applies the embedded agent registry schema and adds ownership
+// columns to databases created before fleet metadata was introduced. It is
+// idempotent, so calling it on an already-bootstrapped database is a no-op.
 func Migrate(db *sql.DB) error {
 	if _, err := db.Exec(schemaDDL); err != nil {
 		return fmt.Errorf("apply agent registry schema: %w", err)
 	}
+	return migrateAgentOwnership(db)
+}
+
+// migrateAgentOwnership adds the ownership columns to an existing agents
+// table. CREATE TABLE IF NOT EXISTS never alters an existing table, and SQLite
+// has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS, so the current columns are
+// inspected first.
+func migrateAgentOwnership(db *sql.DB) error {
+	columns, err := agentColumns(db)
+	if err != nil {
+		return err
+	}
+
+	additions := []struct {
+		name       string
+		definition string
+	}{
+		{"owner_type", "TEXT NOT NULL DEFAULT 'user'"},
+		{"owner_id", "TEXT NOT NULL DEFAULT ''"},
+		{"labels", "TEXT NOT NULL DEFAULT '{}'"},
+	}
+
+	for _, column := range additions {
+		if columns[column.name] {
+			continue
+		}
+		statement := fmt.Sprintf("ALTER TABLE agents ADD COLUMN %s %s", column.name, column.definition)
+		if _, err := db.Exec(statement); err != nil {
+			return fmt.Errorf("add agents.%s column: %w", column.name, err)
+		}
+	}
+
 	return nil
+}
+
+func agentColumns(db *sql.DB) (map[string]bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(agents)`)
+	if err != nil {
+		return nil, fmt.Errorf("inspect agents table: %w", err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			dataType   string
+			notNull    int
+			defaultV   sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultV, &primaryKey); err != nil {
+			return nil, fmt.Errorf("scan agents column: %w", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate agents columns: %w", err)
+	}
+	return columns, nil
 }
