@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 // validAccount is a syntactically valid (unfunded-looking) Stellar address used
@@ -230,6 +233,73 @@ func TestGetAccountNotFound(t *testing.T) {
 	}
 	if nf.Address != validAccount {
 		t.Errorf("address = %q, want %q", nf.Address, validAccount)
+	}
+}
+
+func TestGetAccountHorizonUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	horizonURL := srv.URL
+	srv.Close()
+
+	client := NewClient(Config{Network: NetworkTestnet, HorizonURL: horizonURL})
+
+	_, err := client.GetAccount(context.Background(), validAccount)
+	var unreachable *HorizonUnreachableError
+	if !errors.As(err, &unreachable) {
+		t.Fatalf("err = %v, want *HorizonUnreachableError", err)
+	}
+	if unreachable.URL != horizonURL {
+		t.Errorf("URL = %q, want %q", unreachable.URL, horizonURL)
+	}
+	if !strings.Contains(err.Error(), "horizon request") {
+		t.Errorf("error = %q, want horizon request context", err.Error())
+	}
+}
+
+func TestGetAccountHorizonTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewClient(Config{Network: NetworkTestnet, HorizonURL: srv.URL}).
+		WithHTTPClient(&http.Client{Timeout: 20 * time.Millisecond})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := client.GetAccount(ctx, validAccount)
+	var unreachable *HorizonUnreachableError
+	if !errors.As(err, &unreachable) {
+		t.Fatalf("err = %v, want *HorizonUnreachableError", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Errorf("err = %v, want a timeout cause", err)
+		}
+	}
+}
+
+func TestGetAccountHorizonStatusError(t *testing.T) {
+	for _, status := range []int{http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			client := newHorizonServer(t, func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "upstream unavailable", status)
+			})
+
+			_, err := client.GetAccount(context.Background(), validAccount)
+			var statusErr *HorizonStatusError
+			if !errors.As(err, &statusErr) {
+				t.Fatalf("err = %v, want *HorizonStatusError", err)
+			}
+			if statusErr.StatusCode != status {
+				t.Errorf("StatusCode = %d, want %d", statusErr.StatusCode, status)
+			}
+			if statusErr.URL != client.HorizonURL() {
+				t.Errorf("URL = %q, want %q", statusErr.URL, client.HorizonURL())
+			}
+		})
 	}
 }
 

@@ -134,14 +134,32 @@ func (h *Handler) GetBalance(c *gin.Context) {
 	if err != nil {
 		var nf *sdk.AccountNotFoundError
 		if errors.As(err, &nf) {
-			c.JSON(http.StatusNotFound, ErrorResponse{Error: "Account not found on network"})
+			c.JSON(http.StatusNotFound, ErrorResponse{
+				Error:   "Account not found on network",
+				Network: string(h.network),
+			})
 			return
 		}
-		h.logger.WithError(err).WithField("address", address).Error("Failed to fetch balance")
-		c.JSON(http.StatusBadGateway, ErrorResponse{
+
+		resp := ErrorResponse{
 			Error:   "Failed to fetch balance from network",
 			Message: err.Error(),
-		})
+			Network: string(h.network),
+		}
+		var unreachable *sdk.HorizonUnreachableError
+		if errors.As(err, &unreachable) {
+			resp.HorizonURL = unreachable.URL
+		}
+		var statusErr *sdk.HorizonStatusError
+		if errors.As(err, &statusErr) {
+			resp.HorizonStatus = statusErr.StatusCode
+			if resp.HorizonURL == "" {
+				resp.HorizonURL = statusErr.URL
+			}
+		}
+
+		h.logger.WithError(err).WithField("address", address).Error("Failed to fetch balance")
+		c.JSON(http.StatusBadGateway, resp)
 		return
 	}
 

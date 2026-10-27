@@ -2,9 +2,13 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -132,7 +136,7 @@ func stellarBalanceCmd() *cobra.Command {
 			}
 			res, err := cl.StellarBalance(ctx, args[0], asset)
 			if err != nil {
-				return err
+				return reportStellarBalanceError(args[0], err)
 			}
 			if output == "json" {
 				return printJSON(res)
@@ -147,6 +151,214 @@ func stellarBalanceCmd() *cobra.Command {
 	}
 	c.Flags().StringVar(&asset, "asset", "", "filter to a single asset code (e.g. XLM, USDC)")
 	return c
+}
+
+// stellarBalanceError is the structured form of a balance-query failure. It is
+// printed as JSON in --output json mode and returned as the command error in
+// text mode.
+type stellarBalanceError struct {
+	Message       string `json:"error"`
+	Kind          string `json:"kind"`
+	StatusCode    int    `json:"status_code,omitempty"`
+	Address       string `json:"address,omitempty"`
+	Network       string `json:"network,omitempty"`
+	HorizonURL    string `json:"horizon_url,omitempty"`
+	HorizonStatus int    `json:"horizon_status,omitempty"`
+}
+
+func (e *stellarBalanceError) Error() string { return e.Message }
+
+// reportStellarBalanceError converts a control-plane failure into a clear,
+// actionable message. JSON output still emits a structured error document.
+func reportStellarBalanceError(address string, err error) error {
+	e := newStellarBalanceError(address, err)
+	if output == "json" {
+		if jerr := printJSON(e); jerr != nil {
+			return jerr
+		}
+	}
+	return e
+}
+
+func newStellarBalanceError(address string, err error) *stellarBalanceError {
+	var apiErr *controlplane.APIError
+	if !errors.As(err, &apiErr) {
+		// Errors outside a control-plane response come from the CLI-to-control-
+		// plane hop; they say nothing about Horizon's reachability.
+		return &stellarBalanceError{Kind: "control_plane_error", Message: err.Error()}
+	}
+
+	network := stellarNetworkFromEnv()
+	if apiErr.Network != "" {
+		network = apiErr.Network
+	}
+
+	// Prefer endpoint metadata from the control plane; the CLI's environment
+	// may describe a different network. Only fall back to the local
+	// configuration when the response omits the Horizon URL entirely.
+	horizonURL := apiErr.HorizonURL
+	if horizonURL == "" {
+		horizonURL = horizonURLFromMessage(apiErr.Title + " " + apiErr.Message)
+	}
+	if horizonURL == "" {
+		horizonURL = stellarHorizonURL(network)
+	}
+
+	base := &stellarBalanceError{
+		StatusCode: apiErr.StatusCode,
+		Address:    address,
+		Network:    network,
+		HorizonURL: horizonURL,
+	}
+
+	detail := apiErr.Title + " " + apiErr.Message
+	if apiErr.StatusCode == http.StatusNotFound && isAccountNotFound(detail) {
+		base.Kind = "account_not_found"
+		base.Message = fmt.Sprintf("Account %s not found on %s. Is it funded?", address, network)
+		return base
+	}
+
+	status := apiErr.HorizonStatus
+	if status == 0 {
+		status = horizonStatusFromMessage(detail)
+	}
+	if status >= 500 {
+		return newHorizonStatusError(base, status)
+	}
+
+	// Only classify as unreachable when the control plane identifies the
+	// Horizon endpoint or the message carries a network-failure phrase. A bare
+	// 502/503/504 is a generic control-plane/provider failure: reporting it as
+	// Horizon-unreachable would point users at the wrong service.
+	if status == 0 && (apiErr.HorizonURL != "" || indicatesHorizonUnreachable(detail)) {
+		return newHorizonUnreachableError(base)
+	}
+
+	base.Kind = "control_plane_error"
+	base.Message = apiErr.Error()
+	return base
+}
+
+func isAccountNotFound(detail string) bool {
+	lower := strings.ToLower(detail)
+	return strings.Contains(lower, "account not found") ||
+		strings.Contains(lower, "account does not exist")
+}
+
+func newHorizonUnreachableError(base *stellarBalanceError) *stellarBalanceError {
+	base.Kind = "horizon_unreachable"
+	base.Message = fmt.Sprintf("Could not reach Stellar Horizon at %s. Check your network or try again later.", base.HorizonURL)
+	return base
+}
+
+func newHorizonStatusError(base *stellarBalanceError, status int) *stellarBalanceError {
+	base.Kind = "horizon_status_error"
+	base.HorizonStatus = status
+	base.Message = fmt.Sprintf("Horizon returned an error (status %d). The testnet may be experiencing issues.", status)
+	return base
+}
+
+// stellarNetworkFromEnv mirrors the Stellar package's env-driven default.
+func stellarNetworkFromEnv() string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("STELLAR_NETWORK"))) {
+	case "mainnet", "public", "pubnet":
+		return "mainnet"
+	case "futurenet":
+		return "futurenet"
+	default:
+		return "testnet"
+	}
+}
+
+// stellarHorizonURL mirrors the Stellar package's env-driven Horizon default.
+// The environment override is only trusted when it belongs to the same network
+// as the control plane's response; otherwise use that network's canonical
+// endpoint.
+func stellarHorizonURL(network string) string {
+	if stellarNetworkFromEnv() == network {
+		if h := strings.TrimSpace(os.Getenv("STELLAR_HORIZON_URL")); h != "" {
+			return strings.TrimRight(h, "/")
+		}
+	}
+	switch network {
+	case "mainnet":
+		return "https://horizon.stellar.org"
+	case "futurenet":
+		return "https://horizon-futurenet.stellar.org"
+	default:
+		return "https://horizon-testnet.stellar.org"
+	}
+}
+
+// horizonURLFromMessage extracts the first http(s) URL from a wrapped Horizon
+// error, letting the CLI show the actual endpoint when older control planes do
+// not include structured metadata.
+func horizonURLFromMessage(msg string) string {
+	lower := strings.ToLower(msg)
+	start := -1
+	for _, scheme := range []string{"https://", "http://"} {
+		if idx := strings.Index(lower, scheme); idx >= 0 && (start == -1 || idx < start) {
+			start = idx
+		}
+	}
+	if start == -1 {
+		return ""
+	}
+	fields := strings.Fields(msg[start:])
+	if len(fields) == 0 {
+		return ""
+	}
+	raw := strings.TrimRight(strings.TrimRight(fields[0], `).,;"'`), "/")
+	if u, err := url.Parse(raw); err == nil && u.Scheme != "" && u.Host != "" {
+		return u.Scheme + "://" + u.Host
+	}
+	return raw
+}
+
+// horizonStatusFromMessage extracts a status code from a wrapped Horizon error
+// such as "stellar: horizon returned 503: ..." or "Horizon returned an error
+// (status 500)."
+func horizonStatusFromMessage(msg string) int {
+	lower := strings.ToLower(msg)
+	for _, marker := range []string{"horizon returned ", "status "} {
+		idx := strings.Index(lower, marker)
+		if idx < 0 {
+			continue
+		}
+		rest := strings.TrimLeft(lower[idx+len(marker):], " (")
+		rest = strings.TrimPrefix(rest, "an error (")
+		i := 0
+		for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+			i++
+		}
+		if i > 0 {
+			if n, err := strconv.Atoi(rest[:i]); err == nil {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+func indicatesHorizonUnreachable(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, marker := range []string{
+		"horizon request",
+		"connection refused",
+		"no such host",
+		"i/o timeout",
+		"context deadline exceeded",
+		"network is unreachable",
+		"connection reset",
+		"timeout awaiting response headers",
+		"tls handshake timeout",
+		"dial tcp",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // printAccountTable renders linked accounts as an aligned table.

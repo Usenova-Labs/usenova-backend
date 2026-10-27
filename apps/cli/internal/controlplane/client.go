@@ -142,6 +142,31 @@ type BalanceResponse struct {
 type ErrorResponse struct {
 	Error   string `json:"error"`
 	Message string `json:"message,omitempty"`
+	// Network and Horizon details are optional enrichments returned for
+	// Stellar upstream failures.
+	Network       string `json:"network,omitempty"`
+	HorizonURL    string `json:"horizon_url,omitempty"`
+	HorizonStatus int    `json:"horizon_status,omitempty"`
+}
+
+// APIError is a non-2xx response from the control plane. It carries the HTTP
+// status plus any Stellar-specific metadata so commands can render actionable
+// messages without parsing free-form text.
+type APIError struct {
+	StatusCode    int
+	Title         string
+	Message       string
+	Network       string
+	HorizonURL    string
+	HorizonStatus int
+}
+
+func (e *APIError) Error() string {
+	msg := e.Title
+	if e.Message != "" {
+		msg += ": " + e.Message
+	}
+	return fmt.Sprintf("control plane error (%d): %s", e.StatusCode, msg)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
@@ -173,13 +198,19 @@ func (c *Client) decode(resp *http.Response, out any) error {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		var e ErrorResponse
 		if json.Unmarshal(raw, &e) == nil && e.Error != "" {
-			msg := e.Error
-			if e.Message != "" {
-				msg += ": " + e.Message
+			return &APIError{
+				StatusCode:    resp.StatusCode,
+				Title:         e.Error,
+				Message:       e.Message,
+				Network:       e.Network,
+				HorizonURL:    e.HorizonURL,
+				HorizonStatus: e.HorizonStatus,
 			}
-			return fmt.Errorf("control plane error (%d): %s", resp.StatusCode, msg)
 		}
-		return fmt.Errorf("control plane error (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return &APIError{
+			StatusCode: resp.StatusCode,
+			Title:      strings.TrimSpace(string(raw)),
+		}
 	}
 	if out == nil {
 		return nil
