@@ -1,6 +1,6 @@
 module github.com/byoi-platform/control-plane
 
-go 1.24
+go 1.26
 
 require (
 	github.com/byoi-platform/stellar v0.0.0

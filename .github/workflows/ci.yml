@@ -7,7 +7,7 @@ on:
     branches: [main, develop]
 
 env:
-  GO_VERSION: '1.24'
+  GO_VERSION: '1.26'
   RUST_VERSION: '1.87.0'
 
 permissions:

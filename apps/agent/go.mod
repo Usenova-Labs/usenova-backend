@@ -1,6 +1,6 @@
 module github.com/byoi-platform/agent
 
-go 1.24
+go 1.26
 
 require (
 	github.com/docker/docker v24.0.7+incompatible
