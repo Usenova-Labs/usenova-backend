@@ -72,7 +72,7 @@ jobs:
           set -e
           for d in apps/cli apps/agent apps/control-plane packages/shared packages/stellar; do
             echo "--- download and verify $d ---"
-            (cd "$d" && go mod download ./... && go mod verify)
+            (cd "$d" && go mod download && go mod verify)
           done
 
   go-test:
