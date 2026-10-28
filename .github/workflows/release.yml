@@ -10,20 +10,24 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     strategy:
       matrix:
         include:
           - app: cli
             binary: nova
+            goos: linux
+            goarch: amd64
           - app: agent
             binary: usenova-agent
+            goos: linux
+            goarch: amd64
           - app: control-plane
             binary: nova-control
-          - goos: linux
+            goos: linux
             goarch: amd64
     steps:
       - name: Checkout code
@@ -60,14 +64,34 @@ jobs:
             ${{ matrix.binary }}-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
           retention-days: 7
 
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        # v4.6.2
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: dist
+
+      - name: Move artifacts to root
+        run: |
+          find dist -type f -exec mv {} . \;
+
       - name: Create Release and Upload Assets
-        if: startsWith(github.ref, 'refs/tags/')
         # v1.14.0 (release-action)
         uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191
         with:
           files: |
-            ${{ matrix.binary }}-${{ matrix.goos }}-${{ matrix.goarch }}
-            ${{ matrix.binary }}-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+            nova-linux-amd64
+            nova-linux-amd64.sha256
+            usenova-agent-linux-amd64
+            usenova-agent-linux-amd64.sha256
+            nova-control-linux-amd64
+            nova-control-linux-amd64.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

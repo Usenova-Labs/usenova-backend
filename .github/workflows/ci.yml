@@ -67,14 +67,16 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Verify Go modules (all modules)
+      - name: Download and verify Go modules (all modules)
         run: |
           set -e
+          echo "Downloading go.work modules..."
+          go mod download ./...
           echo "Verifying go.work modules..."
           go mod verify
           for d in apps/cli apps/agent apps/control-plane packages/shared packages/stellar; do
-            echo "--- verify $d ---"
-            (cd "$d" && go mod verify)
+            echo "--- download and verify $d ---"
+            (cd "$d" && go mod download ./... && go mod verify)
           done
 
   go-test:
@@ -182,10 +184,15 @@ jobs:
       - name: Run govulncheck on main modules
         run: |
           set -e
+          failed=0
           for d in apps/cli apps/agent apps/control-plane packages/stellar packages/shared; do
             echo "=== govulncheck $d ==="
-            (cd "$d" && govulncheck ./...)
+            if ! (cd "$d" && govulncheck ./...); then
+              echo "govulncheck failed in $d"
+              failed=1
+            fi
           done
+          exit $failed
 
   dependency-review:
     name: Dependency Review
