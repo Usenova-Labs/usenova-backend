@@ -70,10 +70,6 @@ jobs:
       - name: Download and verify Go modules (all modules)
         run: |
           set -e
-          echo "Downloading go.work modules..."
-          go mod download ./...
-          echo "Verifying go.work modules..."
-          go mod verify
           for d in apps/cli apps/agent apps/control-plane packages/shared packages/stellar; do
             echo "--- download and verify $d ---"
             (cd "$d" && go mod download ./... && go mod verify)
