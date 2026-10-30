@@ -177,6 +177,40 @@ returns `200 OK` with an empty `balances` list (`nova` prints
 configured network; see [Unfunded account](#unfunded-account) and
 [Wrong network](#wrong-network).
 
+## Deployment escrow status (read-only)
+
+Deployments can be linked to an existing escrow id so operators can inspect the
+on-chain state without leaving the control plane. The control plane only reads;
+it does not create, release or refund escrows on this path.
+
+```bash
+# Start the control plane with the escrow contract id and an operator token.
+export PAYMENT_ESCROW_CONTRACT_ID=C...
+export CONTROL_PLANE_ADMIN_TOKEN=...
+
+# Link escrow 1 to a deployment and read its current status. The optional
+# third argument makes the script fail unless the status matches.
+./scripts/check-escrow-status.sh "$DEPLOYMENT_ID" 1 Pending
+```
+
+Direct API equivalent:
+
+```bash
+curl -X PUT "http://127.0.0.1:8080/api/v1/deployments/$DEPLOYMENT_ID/escrow" \
+  -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"escrow_id":1}'
+
+curl "http://127.0.0.1:8080/api/v1/deployments/$DEPLOYMENT_ID/escrow" \
+  -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN"
+```
+
+The status response includes the deployment id, escrow id, configured network,
+on-chain status and a `checked_at` timestamp. A deployment without a linked
+escrow returns `409`; a missing or unreachable contract/RPC returns `502`.
+When `PAYMENT_ESCROW_CONTRACT_ID` is unset, status reads return `503` while
+linking still works.
+
 ## API reference
 
 | Method | Path | Description |

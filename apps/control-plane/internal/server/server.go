@@ -88,6 +88,9 @@ func (s *Server) setupRoutes() {
 				deployments.POST("", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.CreateDeployment)
 				deployments.GET("", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.ListDeployments)
 				deployments.GET("/:deploymentID", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.GetDeployment)
+				deployments.PUT("/:deploymentID/escrow", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.LinkDeploymentEscrow)
+				deployments.POST("/:deploymentID/escrow", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.LinkDeploymentEscrow)
+				deployments.GET("/:deploymentID/escrow", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.GetDeploymentEscrow)
 			}
 
 			scheduler := v1.Group("/scheduler")

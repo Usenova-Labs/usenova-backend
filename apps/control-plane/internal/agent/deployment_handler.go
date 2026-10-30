@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 
+	sdk "github.com/byoi-platform/stellar"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
@@ -25,6 +26,9 @@ type CreateDeploymentRequest struct {
 	Requester string `json:"requester,omitempty"`
 	// ResourceHints constrain scheduler placement.
 	ResourceHints ResourceHints `json:"resource_hints,omitempty"`
+	// EscrowID optionally links the new deployment to an existing on-chain
+	// escrow. Creating the escrow itself is out of scope.
+	EscrowID *uint64 `json:"escrow_id,omitempty"`
 }
 
 // DeploymentListResponse is the deployment listing payload.
@@ -41,6 +45,11 @@ type DeploymentHandler struct {
 	scheduler     *Scheduler
 	operatorToken string
 	logger        *logrus.Logger
+
+	// escrowProvider is optional. When nil, escrow linking still works but
+	// status reads answer 503 because no Soroban contract is configured.
+	escrowProvider EscrowStatusProvider
+	escrowNetwork  sdk.Network
 }
 
 // NewDeploymentHandler creates a deployment handler.
@@ -66,6 +75,14 @@ func NewDeploymentHandler(
 // carry the operator token.
 func (h *DeploymentHandler) RequireOperatorToken() gin.HandlerFunc {
 	return requireOperatorToken(h.operatorToken, h.logger)
+}
+
+// WithEscrowProvider enables the read-only escrow status endpoint. Passing a
+// nil provider leaves status reads disabled.
+func (h *DeploymentHandler) WithEscrowProvider(provider EscrowStatusProvider, network sdk.Network) *DeploymentHandler {
+	h.escrowProvider = provider
+	h.escrowNetwork = network
+	return h
 }
 
 // CreateDeployment handles POST /api/v1/deployments.
@@ -131,6 +148,7 @@ func (h *DeploymentHandler) CreateDeployment(c *gin.Context) {
 		State:       DeploymentStatePending,
 		CommandID:   record.Command.ID,
 		Requester:   req.Requester,
+		EscrowID:    req.EscrowID,
 	})
 	if err != nil {
 		h.logger.WithError(err).WithFields(logrus.Fields{

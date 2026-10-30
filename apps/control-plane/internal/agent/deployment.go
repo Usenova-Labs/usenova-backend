@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -49,8 +50,12 @@ type Deployment struct {
 	CommandID   string            `json:"command_id,omitempty"`
 	Requester   string            `json:"requester,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	// EscrowID optionally links the deployment to a payment-escrow record on
+	// the configured Stellar/Soroban contract. The control plane never creates
+	// escrows automatically; an operator attaches the id out of band.
+	EscrowID  *uint64   `json:"escrow_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // DeploymentFilter narrows the deployments returned by List. Zero values
@@ -92,7 +97,7 @@ func NewPersistentDeploymentStore(db *sql.DB) (*DeploymentStore, error) {
 func (s *DeploymentStore) load() error {
 	rows, err := s.db.Query(`
 		SELECT id, agent_id, service_name, image, state, command_id, requester,
-		       metadata, created_at, updated_at
+		       metadata, escrow_id, created_at, updated_at
 		FROM deployments`)
 	if err != nil {
 		return fmt.Errorf("load deployments: %w", err)
@@ -104,12 +109,13 @@ func (s *DeploymentStore) load() error {
 			d         Deployment
 			state     string
 			metadata  string
+			escrowID  string
 			createdAt string
 			updatedAt string
 		)
 		if err := rows.Scan(
 			&d.ID, &d.AgentID, &d.ServiceName, &d.Image, &state, &d.CommandID,
-			&d.Requester, &metadata, &createdAt, &updatedAt,
+			&d.Requester, &metadata, &escrowID, &createdAt, &updatedAt,
 		); err != nil {
 			return fmt.Errorf("scan deployment: %w", err)
 		}
@@ -122,6 +128,13 @@ func (s *DeploymentStore) load() error {
 			if err := json.Unmarshal([]byte(metadata), &d.Metadata); err != nil {
 				return fmt.Errorf("parse metadata for deployment %q: %w", d.ID, err)
 			}
+		}
+		if escrowID != "" {
+			id, err := strconv.ParseUint(escrowID, 10, 64)
+			if err != nil {
+				return fmt.Errorf("parse escrow_id for deployment %q: %w", d.ID, err)
+			}
+			d.EscrowID = &id
 		}
 		d.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 		if err != nil {
@@ -306,10 +319,14 @@ func (s *DeploymentStore) persistDeployment(d *Deployment) error {
 	if err != nil {
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
+	escrowID := ""
+	if d.EscrowID != nil {
+		escrowID = strconv.FormatUint(*d.EscrowID, 10)
+	}
 	_, err = s.db.Exec(`
 		INSERT INTO deployments
-			(id, agent_id, service_name, image, state, command_id, requester, metadata, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(id, agent_id, service_name, image, state, command_id, requester, metadata, escrow_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		d.ID,
 		d.AgentID,
 		d.ServiceName,
@@ -318,6 +335,7 @@ func (s *DeploymentStore) persistDeployment(d *Deployment) error {
 		d.CommandID,
 		d.Requester,
 		string(metadata),
+		escrowID,
 		d.CreatedAt.Format(time.RFC3339Nano),
 		d.UpdatedAt.Format(time.RFC3339Nano),
 	)
@@ -325,6 +343,40 @@ func (s *DeploymentStore) persistDeployment(d *Deployment) error {
 		return fmt.Errorf("insert deployment %q: %w", d.ID, err)
 	}
 	return nil
+}
+
+// AttachEscrowID links a deployment to an on-chain escrow id. Re-attaching the
+// same id is idempotent; linking a different id is refused so a deployment
+// cannot silently change which payment it tracks.
+func (s *DeploymentStore) AttachEscrowID(id string, escrowID uint64) (*Deployment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	d, exists := s.deployments[id]
+	if !exists {
+		return nil, ErrDeploymentNotFound
+	}
+	if d.EscrowID != nil {
+		if *d.EscrowID == escrowID {
+			return cloneDeployment(d), nil
+		}
+		return nil, fmt.Errorf("%w: deployment %q is already linked to escrow %d",
+			ErrEscrowAlreadyLinked, id, *d.EscrowID)
+	}
+
+	now := time.Now().UTC()
+	if s.db != nil {
+		if _, err := s.db.Exec(
+			`UPDATE deployments SET escrow_id = ?, updated_at = ? WHERE id = ?`,
+			strconv.FormatUint(escrowID, 10), now.Format(time.RFC3339Nano), id,
+		); err != nil {
+			return nil, fmt.Errorf("attach escrow to deployment %q: %w", id, err)
+		}
+	}
+
+	d.EscrowID = &escrowID
+	d.UpdatedAt = now
+	return cloneDeployment(d), nil
 }
 
 func cloneDeployment(d *Deployment) *Deployment {
@@ -335,8 +387,16 @@ func cloneDeployment(d *Deployment) *Deployment {
 			cp.Metadata[k] = v
 		}
 	}
+	if d.EscrowID != nil {
+		id := *d.EscrowID
+		cp.EscrowID = &id
+	}
 	return &cp
 }
 
 // ErrDeploymentNotFound means no deployment with the requested ID exists.
 var ErrDeploymentNotFound = &AgentError{"deployment not found"}
+
+// ErrEscrowAlreadyLinked means the deployment already tracks a different
+// on-chain escrow id.
+var ErrEscrowAlreadyLinked = &AgentError{"deployment already has an escrow linked"}
