@@ -7,7 +7,7 @@ on:
     branches: [main, develop]
 
 env:
-  GO_VERSION: '1.26'
+  GO_VERSION: '1.26.10'
   RUST_VERSION: '1.87.0'
 
 permissions:
@@ -159,9 +159,6 @@ jobs:
     needs: [go-lint, go-verify]
     permissions:
       contents: read
-    # Tree currently has stdlib vulnerabilities with Go 1.22.2 in modules; goal is to turn failure on
-    # after upgrading Go/toolchain. Start with continue-on-error until cleaned up.
-    continue-on-error: true
     steps:
       - name: Checkout code
         # v4.4.0
@@ -175,7 +172,7 @@ jobs:
           cache: true
 
       - name: Install govulncheck (pinned version)
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 
       - name: Run govulncheck on main modules
         run: |

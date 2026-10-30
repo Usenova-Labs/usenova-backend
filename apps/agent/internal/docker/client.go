@@ -9,13 +9,12 @@ import (
 	"io"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/pkg/jsonmessage"
-	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/containerd/errdefs"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/jsonstream"
+	"github.com/moby/moby/api/types/registry"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
 
@@ -46,7 +45,7 @@ func (c *Client) IsAvailable(ctx context.Context) bool {
 	if c == nil || c.cli == nil {
 		return false
 	}
-	_, err := c.cli.Ping(ctx)
+	_, err := c.cli.Ping(ctx, client.PingOptions{})
 	if err != nil {
 		c.log.WithError(err).Debug("Docker ping failed")
 		return false
@@ -61,7 +60,7 @@ func (c *Client) ServerVersion(ctx context.Context) (string, error) {
 		return "", errors.New("docker client is not initialised")
 	}
 
-	version, err := c.cli.ServerVersion(ctx)
+	version, err := c.cli.ServerVersion(ctx, client.ServerVersionOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to get docker version: %w", err)
 	}
@@ -83,11 +82,11 @@ func (c *Client) Close() error {
 // stream, not necessarily through the method's error return. We must decode the
 // stream and surface those errors, otherwise a failed pull can look successful
 // and run a stale local image instead. Registry credentials are never logged.
-func (c *Client) PullImage(ctx context.Context, image string, authConfig *types.AuthConfig) error {
+func (c *Client) PullImage(ctx context.Context, image string, authConfig *registry.AuthConfig) error {
 	// Only the image reference is logged: authConfig carries credentials.
 	c.log.WithField("image", image).Info("Pulling image")
 
-	var opts types.ImagePullOptions
+	var opts client.ImagePullOptions
 	if authConfig != nil {
 		encodedAuth, err := encodeAuthConfig(authConfig)
 		if err != nil {
@@ -105,7 +104,7 @@ func (c *Client) PullImage(ctx context.Context, image string, authConfig *types.
 	// Decode the pull stream so in-band errors are not swallowed.
 	dec := json.NewDecoder(reader)
 	for {
-		var msg jsonmessage.JSONMessage
+		var msg jsonstream.Message
 		if err := dec.Decode(&msg); err != nil {
 			if err == io.EOF {
 				break
@@ -127,7 +126,11 @@ func (c *Client) PullImage(ctx context.Context, image string, authConfig *types.
 func (c *Client) CreateContainer(ctx context.Context, cfg ContainerConfig) (string, error) {
 	containerConfig, hostConfig, _ := buildContainerConfig(cfg)
 
-	resp, err := c.cli.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, cfg.Name)
+	resp, err := c.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config:     containerConfig,
+		HostConfig: hostConfig,
+		Name:       cfg.Name,
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create container %s: %w", cfg.Name, err)
 	}
@@ -141,7 +144,7 @@ func (c *Client) CreateContainer(ctx context.Context, cfg ContainerConfig) (stri
 
 // StartContainer starts a container
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {
-	err := c.cli.ContainerStart(ctx, containerID, types.ContainerStartOptions{})
+	_, err := c.cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to start container %s: %w", containerID, err)
 	}
@@ -156,7 +159,7 @@ func (c *Client) StopContainer(ctx context.Context, containerID string, timeout 
 		timeout = 30 * time.Second
 	}
 	stopTimeout := int(timeout.Seconds())
-	err := c.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &stopTimeout})
+	_, err := c.cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{Timeout: &stopTimeout})
 	if err != nil {
 		// Idempotent: stopping a container that is already gone is success.
 		if errdefs.IsNotFound(err) {
@@ -176,7 +179,7 @@ func (c *Client) RestartContainer(ctx context.Context, containerID string, timeo
 		timeout = 30 * time.Second
 	}
 	stopTimeout := int(timeout.Seconds())
-	err := c.cli.ContainerRestart(ctx, containerID, container.StopOptions{Timeout: &stopTimeout})
+	_, err := c.cli.ContainerRestart(ctx, containerID, client.ContainerRestartOptions{Timeout: &stopTimeout})
 	if err != nil {
 		return fmt.Errorf("failed to restart container %s: %w", containerID, err)
 	}
@@ -187,7 +190,7 @@ func (c *Client) RestartContainer(ctx context.Context, containerID string, timeo
 
 // RemoveContainer removes a container
 func (c *Client) RemoveContainer(ctx context.Context, containerID string, force bool) error {
-	err := c.cli.ContainerRemove(ctx, containerID, types.ContainerRemoveOptions{
+	_, err := c.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{
 		Force:         force,
 		RemoveVolumes: false,
 	})
@@ -205,12 +208,12 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string, force 
 }
 
 // InspectContainer inspects a container
-func (c *Client) InspectContainer(ctx context.Context, containerID string) (*types.ContainerJSON, error) {
-	inspect, err := c.cli.ContainerInspect(ctx, containerID)
+func (c *Client) InspectContainer(ctx context.Context, containerID string) (*container.InspectResponse, error) {
+	inspect, err := c.cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect container %s: %w", containerID, err)
 	}
-	return &inspect, nil
+	return &inspect.Container, nil
 }
 
 // GetContainerLogs returns a stream of the container's stdout and stderr.
@@ -220,12 +223,12 @@ func (c *Client) InspectContainer(ctx context.Context, containerID string) (*typ
 // leak those bytes (and interleave stdout/stderr incorrectly) to callers.
 // stdout and stderr are merged into a single plain-text stream.
 func (c *Client) GetContainerLogs(ctx context.Context, containerID string, opts LogOptions) (io.ReadCloser, error) {
-	info, err := c.cli.ContainerInspect(ctx, containerID)
+	info, err := c.cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect container %s: %w", containerID, err)
 	}
 
-	logOptions := types.ContainerLogsOptions{
+	logOptions := client.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Follow:     opts.Follow,
@@ -242,7 +245,7 @@ func (c *Client) GetContainerLogs(ctx context.Context, containerID string, opts 
 		return nil, fmt.Errorf("failed to get logs for container %s: %w", containerID, err)
 	}
 
-	if info.Config != nil && info.Config.Tty {
+	if info.Container.Config != nil && info.Container.Config.Tty {
 		// TTY containers emit an unframed byte stream; nothing to demultiplex.
 		return stream, nil
 	}
@@ -266,22 +269,26 @@ func demuxLogStream(src io.ReadCloser) io.ReadCloser {
 }
 
 // ListContainers lists containers with filters
-func (c *Client) ListContainers(ctx context.Context, all bool, filters filters.Args) ([]types.Container, error) {
-	return c.cli.ContainerList(ctx, types.ContainerListOptions{
+func (c *Client) ListContainers(ctx context.Context, all bool, filters client.Filters) ([]container.Summary, error) {
+	result, err := c.cli.ContainerList(ctx, client.ContainerListOptions{
 		All:     all,
 		Filters: filters,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return result.Items, nil
 }
 
 // GetContainerStats gets container statistics (basic)
-func (c *Client) GetContainerStats(ctx context.Context, containerID string) (*types.StatsJSON, error) {
-	stats, err := c.cli.ContainerStats(ctx, containerID, false)
+func (c *Client) GetContainerStats(ctx context.Context, containerID string) (*container.StatsResponse, error) {
+	stats, err := c.cli.ContainerStats(ctx, containerID, client.ContainerStatsOptions{Stream: false})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get stats for %s: %w", containerID, err)
 	}
 	defer stats.Body.Close()
 
-	var statsJSON types.StatsJSON
+	var statsJSON container.StatsResponse
 	if err := json.NewDecoder(stats.Body).Decode(&statsJSON); err != nil {
 		return nil, fmt.Errorf("failed to decode stats: %w", err)
 	}
@@ -290,7 +297,8 @@ func (c *Client) GetContainerStats(ctx context.Context, containerID string) (*ty
 
 // WaitForContainer waits for container to exit
 func (c *Client) WaitForContainer(ctx context.Context, containerID string, condition container.WaitCondition) (<-chan container.WaitResponse, <-chan error) {
-	return c.cli.ContainerWait(ctx, containerID, condition)
+	result := c.cli.ContainerWait(ctx, containerID, client.ContainerWaitOptions{Condition: condition})
+	return result.Result, result.Error
 }
 
 // RunContainer creates and starts a container in one operation
@@ -312,7 +320,7 @@ func (c *Client) RunContainer(ctx context.Context, cfg ContainerConfig) (string,
 }
 
 // encodeAuthConfig encodes auth config for registry
-func encodeAuthConfig(authConfig *types.AuthConfig) (string, error) {
+func encodeAuthConfig(authConfig *registry.AuthConfig) (string, error) {
 	if authConfig == nil {
 		return "", nil
 	}
