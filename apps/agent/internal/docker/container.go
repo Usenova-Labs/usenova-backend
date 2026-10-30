@@ -1,40 +1,45 @@
 package docker
 
 import (
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/go-connections/nat"
+	"net/netip"
+
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 )
 
 // getRestartPolicy converts a string restart policy to a docker restart policy name.
-// Docker v24 represents the policy name as a plain string.
-func getRestartPolicy(policy string) string {
+func getRestartPolicy(policy string) container.RestartPolicyMode {
 	switch policy {
 	case "always", "always-restart":
-		return "always"
+		return container.RestartPolicyAlways
 	case "on-failure", "on-failure-restart":
-		return "on-failure"
+		return container.RestartPolicyOnFailure
 	case "unless-stopped":
-		return "unless-stopped"
+		return container.RestartPolicyUnlessStopped
 	case "no", "":
-		return "no"
+		return container.RestartPolicyDisabled
 	default:
-		return "no"
+		return container.RestartPolicyDisabled
 	}
 }
 
 // buildContainerConfig creates docker container config from our ContainerConfig
-func buildContainerConfig(cfg ContainerConfig) (*container.Config, *container.HostConfig, *nat.PortMap) {
+func buildContainerConfig(cfg ContainerConfig) (*container.Config, *container.HostConfig, *network.PortMap) {
 	// Build exposed ports
-	exposedPorts := nat.PortSet{}
-	portBindings := nat.PortMap{}
+	exposedPorts := network.PortSet{}
+	portBindings := network.PortMap{}
+	hostIP := netip.MustParseAddr("0.0.0.0")
 
 	for hostPort, containerPort := range cfg.Ports {
 		if hostPort == "" || containerPort == "" {
 			continue
 		}
-		port := nat.Port(containerPort + "/tcp")
+		port, err := network.ParsePort(containerPort + "/tcp")
+		if err != nil {
+			continue
+		}
 		exposedPorts[port] = struct{}{}
-		portBindings[port] = []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: hostPort}}
+		portBindings[port] = []network.PortBinding{{HostIP: hostIP, HostPort: hostPort}}
 	}
 
 	// Build labels

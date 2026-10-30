@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - app: cli
+            binary: nova
+            goos: linux
+            goarch: amd64
+          - app: agent
+            binary: usenova-agent
+            goos: linux
+            goarch: amd64
+          - app: control-plane
+            binary: nova-control
+            goos: linux
+            goarch: amd64
+    steps:
+      - name: Checkout code
+        # v4.4.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Set up Go
+        # v5.6.0
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.10'
+          cache: true
+
+      - name: Build ${{ matrix.app }} (${{ matrix.goos }}/${{ matrix.goarch }})
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -e
+          cd apps/${{ matrix.app }}
+          go build -v -o ../../${{ matrix.binary }}-${{ matrix.goos }}-${{ matrix.goarch }} .
+
+      - name: Generate SHA256 checksum
+        run: |
+          sha256sum ${{ matrix.binary }}-${{ matrix.goos }}-${{ matrix.goarch }} > ${{ matrix.binary }}-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+
+      - name: Upload release assets
+        # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.binary }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            ${{ matrix.binary }}-${{ matrix.goos }}-${{ matrix.goarch }}
+            ${{ matrix.binary }}-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+          retention-days: 7
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        # v4.6.2
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: dist
+
+      - name: Move artifacts to root
+        run: |
+          find dist -type f -exec mv {} . \;
+
+      - name: Create Release and Upload Assets
+        # v1.14.0 (release-action)
+        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191
+        with:
+          files: |
+            nova-linux-amd64
+            nova-linux-amd64.sha256
+            usenova-agent-linux-amd64
+            usenova-agent-linux-amd64.sha256
+            nova-control-linux-amd64
+            nova-control-linux-amd64.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# Note: cosign/keyless signing is a follow-up (checksums included above).

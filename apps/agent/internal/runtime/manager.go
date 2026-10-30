@@ -11,9 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/errdefs"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/registry"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 
 	"github.com/byoi-platform/agent/internal/docker"
@@ -80,14 +81,14 @@ type serviceMeta struct {
 // It is an interface so the runtime can be unit-tested without a daemon.
 type ContainerRuntime interface {
 	IsAvailable(ctx context.Context) bool
-	PullImage(ctx context.Context, image string, authConfig *types.AuthConfig) error
+	PullImage(ctx context.Context, image string, authConfig *registry.AuthConfig) error
 	RunContainer(ctx context.Context, cfg docker.ContainerConfig) (string, error)
 	StartContainer(ctx context.Context, containerID string) error
 	StopContainer(ctx context.Context, containerID string, timeout time.Duration) error
 	RestartContainer(ctx context.Context, containerID string, timeout time.Duration) error
 	RemoveContainer(ctx context.Context, containerID string, force bool) error
-	InspectContainer(ctx context.Context, containerID string) (*types.ContainerJSON, error)
-	ListContainers(ctx context.Context, all bool, filters filters.Args) ([]types.Container, error)
+	InspectContainer(ctx context.Context, containerID string) (*container.InspectResponse, error)
+	ListContainers(ctx context.Context, all bool, filters client.Filters) ([]container.Summary, error)
 	GetContainerLogs(ctx context.Context, containerID string, opts docker.LogOptions) (io.ReadCloser, error)
 }
 
@@ -645,7 +646,7 @@ func (m *Manager) ServiceLogs(ctx context.Context, name string, opts docker.LogO
 
 	rc, err := m.docker.GetContainerLogs(ctx, id, opts)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
+		if cerrdefs.IsNotFound(err) {
 			return nil, fmt.Errorf("%w: container for service %s is gone", ErrServiceNotFound, name)
 		}
 		return nil, err
@@ -1243,7 +1244,7 @@ func (m *Manager) removeContainerQuietly(id string) {
 // adopt reconstructs ownership of managed containers found on the daemon. This
 // is what keeps services monitored and countable across agent restarts.
 func (m *Manager) adopt(ctx context.Context) {
-	args := filters.NewArgs(filters.Arg("label", labelManaged+"=true"))
+	args := client.Filters{}.Add("label", labelManaged+"=true")
 	containers, err := m.docker.ListContainers(ctx, true, args)
 	if err != nil {
 		m.log.WithError(err).Warn("Failed to list managed containers for adoption")
@@ -1323,10 +1324,9 @@ func (m *Manager) adopt(ctx context.Context) {
 // findManagedContainer looks up a managed container for a service, scoped to
 // our ownership labels so unrelated containers are never touched.
 func (m *Manager) findManagedContainer(ctx context.Context, name string) (string, error) {
-	args := filters.NewArgs(
-		filters.Arg("label", labelManaged+"=true"),
-		filters.Arg("label", labelService+"="+name),
-	)
+	args := client.Filters{}.
+		Add("label", labelManaged+"=true").
+		Add("label", labelService+"="+name)
 	containers, err := m.docker.ListContainers(ctx, true, args)
 	if err != nil {
 		return "", err
@@ -1344,7 +1344,7 @@ func (m *Manager) findManagedContainer(ctx context.Context, name string) (string
 // specFromInspect reconstructs a desired spec from a running container so it can
 // be re-adopted. Secrets are read back from the container's own config (which is
 // where they already live), never from labels.
-func specFromInspect(name string, info *types.ContainerJSON, metaRaw string) docker.ServiceSpec {
+func specFromInspect(name string, info *container.InspectResponse, metaRaw string) docker.ServiceSpec {
 	spec := docker.ServiceSpec{Name: name}
 	if info == nil {
 		return spec
@@ -1355,7 +1355,7 @@ func specFromInspect(name string, info *types.ContainerJSON, metaRaw string) doc
 		spec.Env = append([]string(nil), info.Config.Env...)
 	}
 	if info.HostConfig != nil {
-		spec.RestartPolicy = info.HostConfig.RestartPolicy.Name
+		spec.RestartPolicy = string(info.HostConfig.RestartPolicy.Name)
 		spec.Volumes = append([]string(nil), info.HostConfig.Binds...)
 		if info.HostConfig.NanoCPUs > 0 || info.HostConfig.Memory > 0 {
 			spec.Resources = &docker.ResourceLimits{
@@ -1531,7 +1531,7 @@ func derivePorts(specPorts map[string]string) map[int]int {
 
 // publishedPorts extracts the actual published host ports from a container
 // inspect result, keyed by container port.
-func publishedPorts(info *types.ContainerJSON) map[int]int {
+func publishedPorts(info *container.InspectResponse) map[int]int {
 	out := make(map[int]int)
 	if info == nil || info.NetworkSettings == nil {
 		return out

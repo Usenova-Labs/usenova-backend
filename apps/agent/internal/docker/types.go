@@ -2,9 +2,10 @@ package docker
 
 import (
 	"encoding/json"
+	"net/netip"
 	"time"
 
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/network"
 )
 
 // ContainerConfig holds configuration for creating a container
@@ -211,14 +212,18 @@ type LogOptions struct {
 	Tail       string
 }
 
-func (c *ContainerConfig) ToPortMap() nat.PortMap {
-	portMap := nat.PortMap{}
+func (c *ContainerConfig) ToPortMap() network.PortMap {
+	portMap := network.PortMap{}
+	hostIP := netip.MustParseAddr("0.0.0.0")
 	for hostPort, containerPort := range c.Ports {
 		if hostPort == "" || containerPort == "" {
 			continue
 		}
-		port := nat.Port(containerPort + "/tcp")
-		binding := []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: hostPort}}
+		port, err := network.ParsePort(containerPort + "/tcp")
+		if err != nil {
+			continue
+		}
+		binding := []network.PortBinding{{HostIP: hostIP, HostPort: hostPort}}
 		portMap[port] = binding
 	}
 	return portMap

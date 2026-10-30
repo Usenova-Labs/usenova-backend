@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/api/types/registry"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 
 	"github.com/byoi-platform/agent/internal/docker"
@@ -36,7 +37,7 @@ type fakeRuntime struct {
 	stopped    []string
 	removed    []string
 
-	inspect map[string]types.ContainerJSON
+	inspect map[string]container.InspectResponse
 	nextID  int
 
 	logCalls []logCall
@@ -49,12 +50,12 @@ type fakeRuntime struct {
 }
 
 func newFakeRuntime() *fakeRuntime {
-	return &fakeRuntime{available: true, inspect: make(map[string]types.ContainerJSON)}
+	return &fakeRuntime{available: true, inspect: make(map[string]container.InspectResponse)}
 }
 
 func (f *fakeRuntime) IsAvailable(ctx context.Context) bool { return f.available }
 
-func (f *fakeRuntime) PullImage(ctx context.Context, image string, authConfig *types.AuthConfig) error {
+func (f *fakeRuntime) PullImage(ctx context.Context, image string, authConfig *registry.AuthConfig) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pulled = append(f.pulled, image)
@@ -67,12 +68,10 @@ func (f *fakeRuntime) RunContainer(ctx context.Context, cfg docker.ContainerConf
 	f.runConfigs = append(f.runConfigs, cfg)
 	f.nextID++
 	id := "container-" + string(rune('0'+f.nextID))
-	f.inspect[id] = types.ContainerJSON{
-		ContainerJSONBase: &types.ContainerJSONBase{
-			ID:    id,
-			Name:  cfg.Name,
-			State: &types.ContainerState{Running: true, Status: "running"},
-		},
+	f.inspect[id] = container.InspectResponse{
+		ID:    id,
+		Name:  cfg.Name,
+		State: &container.State{Running: true, Status: "running"},
 	}
 	return id, nil
 }
@@ -105,7 +104,7 @@ func (f *fakeRuntime) RemoveContainer(ctx context.Context, containerID string, f
 	return nil
 }
 
-func (f *fakeRuntime) InspectContainer(ctx context.Context, containerID string) (*types.ContainerJSON, error) {
+func (f *fakeRuntime) InspectContainer(ctx context.Context, containerID string) (*container.InspectResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	info, ok := f.inspect[containerID]
@@ -115,7 +114,7 @@ func (f *fakeRuntime) InspectContainer(ctx context.Context, containerID string) 
 	return &info, nil
 }
 
-func (f *fakeRuntime) ListContainers(ctx context.Context, all bool, filter filters.Args) ([]types.Container, error) {
+func (f *fakeRuntime) ListContainers(ctx context.Context, all bool, filter client.Filters) ([]container.Summary, error) {
 	return nil, nil
 }
 
@@ -151,7 +150,7 @@ func (f *fakeRuntime) setRunning(containerID string, running bool, exitCode int)
 		return
 	}
 	if info.State == nil {
-		info.State = &types.ContainerState{}
+		info.State = &container.State{}
 	}
 	info.State.Running = running
 	info.State.ExitCode = exitCode
@@ -441,14 +440,12 @@ func TestBuildHealthCheck(t *testing.T) {
 }
 
 func TestPublishedPorts(t *testing.T) {
-	info := &types.ContainerJSON{
-		NetworkSettings: &types.NetworkSettings{
-			NetworkSettingsBase: types.NetworkSettingsBase{
-				Ports: nat.PortMap{
-					"80/tcp":   []nat.PortBinding{{HostPort: "49152"}},
-					"443/tcp":  []nat.PortBinding{{HostPort: "49153"}},
-					"9999/tcp": nil,
-				},
+	info := &container.InspectResponse{
+		NetworkSettings: &container.NetworkSettings{
+			Ports: network.PortMap{
+				network.MustParsePort("80/tcp"):   {{HostPort: "49152"}},
+				network.MustParsePort("443/tcp"):  {{HostPort: "49153"}},
+				network.MustParsePort("9999/tcp"): nil,
 			},
 		},
 	}

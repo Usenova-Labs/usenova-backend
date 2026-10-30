@@ -1,0 +1,23 @@
+name: Dependency Review
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    # Safe for forks - no secrets used
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        # v4.4.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Dependency Review
+        # v4.8.3
+        uses: actions/dependency-review-action@05fe4576374b728f0c523d6a13d64c25081e0803
+        # Requires GitHub Dependency graph; if this fails on forks/public setup, adjust as needed.
