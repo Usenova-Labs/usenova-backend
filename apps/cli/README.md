@@ -23,6 +23,7 @@ Or build everything from the repo root:
 | Agent API URL | `--agent-url` | `NOVA_AGENT_URL` (falls back to `USENOVA_AGENT_URL`) | `http://127.0.0.1:9090` |
 | Control plane URL | `--control-plane-url` | `NOVA_CONTROL_PLANE_URL` (falls back to `USENOVA_CONTROL_PLANE_URL`) | `http://127.0.0.1:8080` |
 | Bearer token | `--token` | `NOVA_API_TOKEN` (falls back to `USENOVA_API_TOKEN`) | (empty) |
+| Deploy target | `--target` | — | `local` |
 | Output format | `-o, --output` | — | `text` |
 | Request timeout | `--timeout` | — | `2m` |
 
@@ -56,7 +57,42 @@ the agent restarts a failing service (defaults come from the agent
 configuration). Once the budget is used up the service is marked `failed` and
 the agent stops restarting it.
 
-Deployments can outlive `--timeout`; when that happens the CLI queries the
+#### Targets
+
+`--target` selects where the deployment goes:
+
+| Value | Behavior |
+| --- | --- |
+| `local` (default), `byoi` | Calls the agent's loopback API, unchanged. |
+| `remote`, `usenova` | Calls the control plane deployment API; the scheduler picks a healthy platform agent and enqueues the deploy command. |
+
+Local deployment:
+
+```bash
+nova deploy --name web --image nginx:alpine --target local
+```
+
+Remote platform deployment:
+
+```bash
+nova deploy --name web --image nginx:alpine \
+  --target remote \
+  --control-plane-url https://control-plane.example.com \
+  --token "$CONTROL_PLANE_ADMIN_TOKEN"
+```
+
+For remote deployments, `--token` is the control-plane operator token (the
+same credential the command and Stellar APIs use), not the agent's loopback
+token. The CLI returns as soon as the deployment is queued; the agent picks the
+command up on its next poll. The response includes the deployment ID, target
+agent ID and initial state. Query the record with
+`GET /api/v1/deployments/:id` on the control plane.
+
+Clear errors are reported when the control plane is unreachable, when it has
+no operator token configured, when the operator token is rejected, or when no
+platform capacity is available.
+
+Deployments can outlive `--timeout`; when that happens the local CLI queries the
 service state and reports it instead of a bare timeout.
 
 ### Inspect
