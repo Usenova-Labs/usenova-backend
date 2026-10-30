@@ -278,3 +278,23 @@ func TestServiceRawPassthrough(t *testing.T) {
 		t.Errorf("JSON replay = %s\nwant original payload %s", out, payload)
 	}
 }
+
+func TestServiceRestartBreakerFields(t *testing.T) {
+	payload := `{"Spec":{"name":"worker","image":"worker:1"},"State":"failed","DesiredState":"running","RestartCount":2,"restart_count":2,"restart_budget_remaining":0,"restart_window_seconds":600,"failed_reason":"circuit_breaker"}`
+
+	var s Service
+	if err := json.Unmarshal([]byte(payload), &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if s.RestartCount != 2 || s.RestartCountInWindow != 2 || s.RestartBudgetRemaining != 0 || s.RestartWindowSeconds != 600 || s.FailedReason != "circuit_breaker" {
+		t.Errorf("restart breaker fields lost: %+v", s)
+	}
+
+	out, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(out) != payload {
+		t.Errorf("json output = %s, want original payload %s", out, payload)
+	}
+}
