@@ -69,10 +69,24 @@ jobs:
 
       - name: Download and verify Go modules (all modules)
         run: |
-          set -e
+          set -euo pipefail
+          retry() {
+            local attempts=5 delay=5 n=1 status
+            until "$@"; do
+              status=$?
+              if [ "$n" -ge "$attempts" ]; then
+                echo "command failed after $attempts attempts: $*" >&2
+                return "$status"
+              fi
+              echo "command failed (attempt $n/$attempts); retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+              n=$((n + 1))
+              delay=$((delay * 2))
+            done
+          }
           for d in apps/cli apps/agent apps/control-plane packages/shared packages/stellar; do
             echo "--- download and verify $d ---"
-            (cd "$d" && go mod download && go mod verify)
+            (cd "$d" && retry go mod download && go mod verify)
           done
 
   go-test:
@@ -95,12 +109,25 @@ jobs:
 
       - name: Download dependencies
         run: |
-          set -e
-          (cd apps/cli && go mod download)
-          (cd apps/agent && go mod download)
-          (cd apps/control-plane && go mod download)
-          (cd packages/shared && go mod download)
-          (cd packages/stellar && go mod download)
+          set -euo pipefail
+          retry() {
+            local attempts=5 delay=5 n=1 status
+            until "$@"; do
+              status=$?
+              if [ "$n" -ge "$attempts" ]; then
+                echo "command failed after $attempts attempts: $*" >&2
+                return "$status"
+              fi
+              echo "command failed (attempt $n/$attempts); retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+              n=$((n + 1))
+              delay=$((delay * 2))
+            done
+          }
+          for d in apps/cli apps/agent apps/control-plane packages/shared packages/stellar; do
+            echo "--- download $d ---"
+            (cd "$d" && retry go mod download)
+          done
 
       - name: Run tests per module (fail on first failure)
         run: |
