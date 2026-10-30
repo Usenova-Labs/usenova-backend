@@ -288,13 +288,35 @@ func printServiceDetail(s *client.Service) {
 		}
 		row("HEALTH", h)
 	}
-	row("RESTARTS", fmt.Sprintf("%d", s.RestartCount))
+	row("RESTARTS", formatRestarts(s))
 	if !s.DeployedAt.IsZero() {
 		row("DEPLOYED", s.DeployedAt.Format(time.RFC3339))
 	}
 	if s.ContainerID != "" {
 		row("CONTAINER", s.ContainerID)
 	}
+}
+
+// formatRestarts renders the breaker's attempt count against its budget. Old
+// agents do not expose breaker state, so fall back to the legacy total.
+func formatRestarts(s *client.Service) string {
+	hasBreakerState := s.RestartWindowSeconds > 0 || s.RestartBudgetRemaining != 0 || s.FailedReason != ""
+	if !hasBreakerState {
+		return fmt.Sprintf("%d", s.RestartCount)
+	}
+
+	attempts := s.RestartCountInWindow
+
+	var out string
+	if s.RestartBudgetRemaining < 0 {
+		out = fmt.Sprintf("%d/unlimited", attempts)
+	} else {
+		out = fmt.Sprintf("%d/%d", attempts, attempts+s.RestartBudgetRemaining)
+	}
+	if s.FailedReason == "circuit_breaker" {
+		out += " (circuit breaker tripped)"
+	}
+	return out
 }
 
 func statusCmd() *cobra.Command {

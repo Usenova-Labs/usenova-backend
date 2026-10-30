@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 // fakeManager implements ServiceManager for handler tests. Only the methods
 // exercised by the logs endpoint carry behavior; the rest are no-ops.
 type fakeManager struct {
+	services   map[string]*runtime.Service
 	logs       map[string]string
 	logsErr    map[string]error
 	lastOpts   docker.LogOptions
@@ -26,8 +28,9 @@ type fakeManager struct {
 
 func newFakeManager() *fakeManager {
 	return &fakeManager{
-		logs:    make(map[string]string),
-		logsErr: make(map[string]error),
+		services: make(map[string]*runtime.Service),
+		logs:     make(map[string]string),
+		logsErr:  make(map[string]error),
 	}
 }
 
@@ -36,10 +39,19 @@ func (f *fakeManager) DeployService(context.Context, docker.ServiceSpec) (*runti
 }
 func (f *fakeManager) StopService(context.Context, string) error   { return nil }
 func (f *fakeManager) RemoveService(context.Context, string) error { return nil }
-func (f *fakeManager) ListServices() []*runtime.Service            { return nil }
-func (f *fakeManager) GetService(string) (*runtime.Service, bool)  { return nil, false }
-func (f *fakeManager) RunningCount() int                           { return 0 }
-func (f *fakeManager) FailedCount() int                            { return 0 }
+func (f *fakeManager) ListServices() []*runtime.Service {
+	out := make([]*runtime.Service, 0, len(f.services))
+	for _, svc := range f.services {
+		out = append(out, svc)
+	}
+	return out
+}
+func (f *fakeManager) GetService(name string) (*runtime.Service, bool) {
+	svc, ok := f.services[name]
+	return svc, ok
+}
+func (f *fakeManager) RunningCount() int { return 0 }
+func (f *fakeManager) FailedCount() int  { return 0 }
 
 func (f *fakeManager) ServiceLogs(_ context.Context, name string, opts docker.LogOptions) (io.ReadCloser, error) {
 	f.logCalls++
@@ -80,6 +92,38 @@ func do(t *testing.T, srv *Server, method, target, token string) *httptest.Respo
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec
+}
+
+func TestServiceStatus_SerializesRestartBreakerState(t *testing.T) {
+	mgr := newFakeManager()
+	mgr.services["worker"] = &runtime.Service{
+		Spec:                   docker.ServiceSpec{Name: "worker", Image: "worker:1"},
+		State:                  runtime.ServiceStateFailed,
+		DesiredState:           runtime.ServiceStateRunning,
+		RestartCount:           2,
+		RestartAttempts:        2,
+		RestartBudgetRemaining: 0,
+		RestartWindowSeconds:   600,
+		FailedReason:           runtime.FailedReasonCircuitBreaker,
+	}
+	srv := testServer(t, mgr)
+
+	rec := do(t, srv, http.MethodGet, "/services/worker", "secret-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	for _, key := range []string{"restart_count", "restart_budget_remaining", "restart_window_seconds", "failed_reason"} {
+		if _, ok := payload[key]; !ok {
+			t.Errorf("expected %q in status JSON, got %s", key, rec.Body.String())
+		}
+	}
+	if got := payload["failed_reason"]; got != runtime.FailedReasonCircuitBreaker {
+		t.Errorf("failed_reason = %v, want %q", got, runtime.FailedReasonCircuitBreaker)
+	}
 }
 
 func TestLogsHandler_StreamsTail(t *testing.T) {

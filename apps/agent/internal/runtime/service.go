@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/byoi-platform/agent/internal/docker"
@@ -35,6 +36,10 @@ const (
 	RestartPolicyUnlessStopped = "unless-stopped"
 )
 
+// FailedReasonCircuitBreaker is reported in the service status when the agent
+// stopped restarting a service because it exhausted its restart budget.
+const FailedReasonCircuitBreaker = "circuit_breaker"
+
 // Service is the agent's representation of a managed service: the desired
 // spec plus the observed container state.
 type Service struct {
@@ -64,6 +69,17 @@ type Service struct {
 	// window. It is what the restart breaker compares against its limit.
 	RestartAttempts int
 
+	// RestartBudgetRemaining is how many restart attempts are left in the
+	// current window. A negative value means restarts are unlimited.
+	RestartBudgetRemaining int `json:"restart_budget_remaining"`
+
+	// RestartWindowSeconds is the sliding window used by the restart breaker.
+	RestartWindowSeconds int `json:"restart_window_seconds"`
+
+	// FailedReason explains why the service was marked failed. It is empty
+	// unless a specific breaker decision caused the failure.
+	FailedReason string `json:"failed_reason,omitempty"`
+
 	// LastRestartAt is when the last restart attempt was made
 	LastRestartAt time.Time
 
@@ -92,6 +108,20 @@ type Service struct {
 	// number identifies the queued attempt, so a goroutine that finishes late
 	// cannot clear a newer pending attempt.
 	restartPendingSeq uint64
+}
+
+// MarshalJSON keeps the original PascalCase fields for backward compatibility
+// while exposing the restart breaker state under the snake_case names used by
+// the status contract.
+func (s Service) MarshalJSON() ([]byte, error) {
+	type alias Service
+	return json.Marshal(&struct {
+		*alias
+		RestartCount int `json:"restart_count"`
+	}{
+		alias:        (*alias)(&s),
+		RestartCount: s.RestartAttempts,
+	})
 }
 
 // ShortID returns a shortened container ID for logging

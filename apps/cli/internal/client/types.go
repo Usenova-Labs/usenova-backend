@@ -45,6 +45,13 @@ type Service struct {
 	RestartCount int         `json:"RestartCount"`
 	DeployedAt   time.Time   `json:"DeployedAt"`
 
+	// Restart breaker state exposed by newer agents. These are optional:
+	// older agents omit them and the CLI falls back to RestartCount.
+	RestartCountInWindow   int    `json:"restart_count,omitempty"`
+	RestartBudgetRemaining int    `json:"restart_budget_remaining,omitempty"`
+	RestartWindowSeconds   int    `json:"restart_window_seconds,omitempty"`
+	FailedReason           string `json:"failed_reason,omitempty"`
+
 	raw json.RawMessage
 }
 

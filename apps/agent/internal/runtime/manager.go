@@ -659,8 +659,10 @@ func (m *Manager) ListServices() []*Service {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]*Service, 0, len(m.services))
+	now := time.Now()
 	for _, svc := range m.services {
 		c := *svc
+		m.annotateRestartStatusLocked(&c, now)
 		out = append(out, &c)
 	}
 	return out
@@ -1606,5 +1608,38 @@ func (m *Manager) snapshot(name string) (*Service, bool) {
 		return nil, false
 	}
 	c := *svc
+	m.annotateRestartStatusLocked(&c, time.Now())
 	return &c, true
+}
+
+// annotateRestartStatusLocked fills the status-only restart fields from the
+// service's breaker. The caller must hold at least the manager read lock.
+func (m *Manager) annotateRestartStatusLocked(s *Service, now time.Time) {
+	policy := m.policyForSpecLocked(s.Spec)
+	attempts := s.RestartAttempts
+	if s.restart != nil {
+		policy = s.restart.policy
+		attempts = s.restart.countAt(now)
+	}
+
+	s.RestartAttempts = attempts
+	s.RestartWindowSeconds = int(policy.Window / time.Second)
+	if policy.MaxRestarts > 0 {
+		remaining := policy.MaxRestarts - attempts
+		if remaining < 0 {
+			remaining = 0
+		}
+		s.RestartBudgetRemaining = remaining
+	} else {
+		s.RestartBudgetRemaining = -1
+	}
+
+	if s.restartExhausted {
+		// The breaker stays tripped until redeploy, even after the attempts
+		// that exhausted it have aged out of the sliding window.
+		s.RestartBudgetRemaining = 0
+		s.FailedReason = FailedReasonCircuitBreaker
+	} else {
+		s.FailedReason = ""
+	}
 }

@@ -139,6 +139,20 @@ func (b *restartBreaker) count(now time.Time) int {
 	return len(b.attempts)
 }
 
+// countAt returns the number of attempts inside the current window without
+// mutating the breaker, so status snapshots can be taken under a read lock.
+func (b *restartBreaker) countAt(now time.Time) int {
+	if b.policy.Window <= 0 {
+		return len(b.attempts)
+	}
+	cutoff := now.Add(-b.policy.Window)
+	drop := 0
+	for drop < len(b.attempts) && !b.attempts[drop].After(cutoff) {
+		drop++
+	}
+	return len(b.attempts) - drop
+}
+
 // prune drops attempts that fell out of the sliding window.
 func (b *restartBreaker) prune(now time.Time) {
 	if b.policy.Window <= 0 {
