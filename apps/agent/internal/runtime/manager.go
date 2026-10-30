@@ -1635,6 +1635,9 @@ func (m *Manager) annotateRestartStatusLocked(s *Service, now time.Time) {
 	}
 
 	if s.restartExhausted {
+		// The breaker stays tripped until redeploy, even after the attempts
+		// that exhausted it have aged out of the sliding window.
+		s.RestartBudgetRemaining = 0
 		s.FailedReason = FailedReasonCircuitBreaker
 	} else {
 		s.FailedReason = ""

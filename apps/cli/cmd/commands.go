@@ -239,9 +239,6 @@ func formatRestarts(s *client.Service) string {
 	}
 
 	attempts := s.RestartCountInWindow
-	if attempts == 0 && s.RestartCount > 0 {
-		attempts = s.RestartCount
-	}
 
 	var out string
 	if s.RestartBudgetRemaining < 0 {

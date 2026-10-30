@@ -73,6 +73,16 @@ func TestFormatRestarts(t *testing.T) {
 			want: "3/3 (circuit breaker tripped)",
 		},
 		{
+			name: "zero attempts in current window",
+			svc: client.Service{
+				RestartCount:           3,
+				RestartCountInWindow:   0,
+				RestartBudgetRemaining: 2,
+				RestartWindowSeconds:   600,
+			},
+			want: "0/2",
+		},
+		{
 			name: "unlimited restarts",
 			svc: client.Service{
 				RestartCountInWindow:   4,

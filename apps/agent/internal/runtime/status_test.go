@@ -96,3 +96,40 @@ func TestService_StatusJSONUnlimitedRestartBudget(t *testing.T) {
 		t.Errorf("expected legacy RestartCount 7, got %v", got)
 	}
 }
+
+func TestManager_ExhaustedServiceKeepsZeroBudgetAfterWindowExpires(t *testing.T) {
+	fake := newFakeRuntime()
+	m := NewManager(fake, testLogger())
+	m.SetRestartPolicy(RestartPolicy{MaxRestarts: 1, Window: time.Minute})
+
+	spec := docker.ServiceSpec{
+		Name:          "worker",
+		Image:         "worker:1",
+		RestartPolicy: RestartPolicyOnFailure,
+	}
+	if _, err := m.DeployService(context.Background(), spec); err != nil {
+		t.Fatalf("deploy failed: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := m.onUnhealthy(context.Background(), "worker"); err != nil {
+			t.Fatalf("onUnhealthy failed: %v", err)
+		}
+	}
+
+	// Simulate the attempts aging out of the sliding window. The breaker is
+	// still tripped, so the advertised budget must remain zero.
+	m.mu.Lock()
+	m.services["worker"].restart.attempts = []time.Time{time.Now().Add(-2 * time.Minute)}
+	m.mu.Unlock()
+
+	svc, _ := m.GetService("worker")
+	if svc.RestartAttempts != 0 {
+		t.Errorf("expected no attempts in the current window, got %d", svc.RestartAttempts)
+	}
+	if svc.RestartBudgetRemaining != 0 {
+		t.Errorf("expected exhausted service to report zero budget, got %d", svc.RestartBudgetRemaining)
+	}
+	if svc.FailedReason != FailedReasonCircuitBreaker {
+		t.Errorf("expected failed reason %q, got %q", FailedReasonCircuitBreaker, svc.FailedReason)
+	}
+}
