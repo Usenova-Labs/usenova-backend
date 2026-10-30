@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS deployments (
     command_id   TEXT NOT NULL DEFAULT '',
     requester    TEXT NOT NULL DEFAULT '',
     metadata     TEXT NOT NULL DEFAULT '{}',
+    escrow_id    TEXT NOT NULL DEFAULT '',
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );

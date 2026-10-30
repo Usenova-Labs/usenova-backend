@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -108,11 +110,13 @@ func TestDeploymentStore_PersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("NewPersistentDeploymentStore: %v", err)
 	}
 
+	escrowID := uint64(42)
 	created, err := store.Create(Deployment{
 		AgentID:     "platform-1",
 		ServiceName: "web",
 		Image:       "nginx",
 		CommandID:   "cmd-1",
+		EscrowID:    &escrowID,
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -141,6 +145,9 @@ func TestDeploymentStore_PersistsAcrossRestart(t *testing.T) {
 	if got.State != DeploymentStateSucceeded || got.CommandID != "cmd-1" || got.ServiceName != "web" {
 		t.Errorf("reloaded deployment = %+v", got)
 	}
+	if got.EscrowID == nil || *got.EscrowID != escrowID {
+		t.Errorf("reloaded escrow_id = %v, want %d", got.EscrowID, escrowID)
+	}
 
 	updated, err := reloaded.UpdateStateByCommandID("cmd-1", DeploymentStateRunning)
 	if err != nil {
@@ -164,5 +171,90 @@ func TestDeploymentStore_Timestamps(t *testing.T) {
 	}
 	if time.Since(d.CreatedAt) > time.Minute {
 		t.Errorf("created_at looks wrong: %v", d.CreatedAt)
+	}
+}
+
+func TestDeploymentStore_AttachEscrowID(t *testing.T) {
+	store := NewDeploymentStore()
+
+	d, err := store.Create(Deployment{AgentID: "platform-1", ServiceName: "web", Image: "nginx"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if d.EscrowID != nil {
+		t.Fatalf("new deployment already has escrow: %d", *d.EscrowID)
+	}
+
+	escrowID := uint64(99)
+	linked, err := store.AttachEscrowID(d.ID, escrowID)
+	if err != nil {
+		t.Fatalf("AttachEscrowID: %v", err)
+	}
+	if linked.EscrowID == nil || *linked.EscrowID != escrowID {
+		t.Fatalf("linked escrow_id = %v, want %d", linked.EscrowID, escrowID)
+	}
+
+	// Same id is idempotent.
+	if _, err := store.AttachEscrowID(d.ID, escrowID); err != nil {
+		t.Fatalf("re-attach same id: %v", err)
+	}
+
+	// A different id is refused.
+	if _, err := store.AttachEscrowID(d.ID, escrowID+1); !errors.Is(err, ErrEscrowAlreadyLinked) {
+		t.Fatalf("attach different id error = %v, want ErrEscrowAlreadyLinked", err)
+	}
+
+	if _, err := store.AttachEscrowID("missing", escrowID); !errors.Is(err, ErrDeploymentNotFound) {
+		t.Fatalf("attach missing error = %v, want ErrDeploymentNotFound", err)
+	}
+}
+
+func TestMigrateDeploymentEscrowOnLegacyDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "control-plane.db")
+
+	// Simulate a database created before escrow linkage existed.
+	db, err := sql.Open(sqliteDriver, path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE deployments (
+		id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, service_name TEXT NOT NULL,
+		image TEXT NOT NULL, state TEXT NOT NULL, command_id TEXT NOT NULL DEFAULT '',
+		requester TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '{}',
+		created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("create legacy deployments table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	db, err = OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer db.Close()
+
+	columns, err := tableColumns(db, "deployments")
+	if err != nil {
+		t.Fatalf("tableColumns: %v", err)
+	}
+	if !columns["escrow_id"] {
+		t.Fatal("escrow_id column was not added by migration")
+	}
+
+	store, err := NewPersistentDeploymentStore(db)
+	if err != nil {
+		t.Fatalf("NewPersistentDeploymentStore: %v", err)
+	}
+	escrowID := uint64(5)
+	d, err := store.Create(Deployment{
+		AgentID: "platform-1", ServiceName: "web", Image: "nginx", EscrowID: &escrowID,
+	})
+	if err != nil {
+		t.Fatalf("Create after migration: %v", err)
+	}
+	if d.EscrowID == nil || *d.EscrowID != escrowID {
+		t.Errorf("escrow_id = %v, want %d", d.EscrowID, escrowID)
 	}
 }

@@ -104,7 +104,10 @@ func Migrate(db *sql.DB) error {
 	if _, err := db.Exec(schemaDDL); err != nil {
 		return fmt.Errorf("apply agent registry schema: %w", err)
 	}
-	return migrateAgentOwnership(db)
+	if err := migrateAgentOwnership(db); err != nil {
+		return err
+	}
+	return migrateDeploymentEscrow(db)
 }
 
 // migrateAgentOwnership adds the ownership columns to an existing agents
@@ -140,9 +143,30 @@ func migrateAgentOwnership(db *sql.DB) error {
 }
 
 func agentColumns(db *sql.DB) (map[string]bool, error) {
-	rows, err := db.Query(`PRAGMA table_info(agents)`)
+	return tableColumns(db, "agents")
+}
+
+// migrateDeploymentEscrow adds the optional escrow linkage to deployment
+// records created before escrow visibility was introduced. The id is stored as
+// TEXT so the full uint64 range survives SQLite's signed INTEGER limit.
+func migrateDeploymentEscrow(db *sql.DB) error {
+	columns, err := tableColumns(db, "deployments")
 	if err != nil {
-		return nil, fmt.Errorf("inspect agents table: %w", err)
+		return err
+	}
+	if columns["escrow_id"] {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE deployments ADD COLUMN escrow_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add deployments.escrow_id column: %w", err)
+	}
+	return nil
+}
+
+func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return nil, fmt.Errorf("inspect %s table: %w", table, err)
 	}
 	defer rows.Close()
 
@@ -157,12 +181,12 @@ func agentColumns(db *sql.DB) (map[string]bool, error) {
 			primaryKey int
 		)
 		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultV, &primaryKey); err != nil {
-			return nil, fmt.Errorf("scan agents column: %w", err)
+			return nil, fmt.Errorf("scan %s column: %w", table, err)
 		}
 		columns[name] = true
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate agents columns: %w", err)
+		return nil, fmt.Errorf("iterate %s columns: %w", table, err)
 	}
 	return columns, nil
 }

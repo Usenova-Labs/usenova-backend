@@ -12,6 +12,11 @@ Central coordination API that agents register with and report to.
 | `POST /api/v1/agents/:agentID/heartbeat` | Bearer | Update agent status |
 | `GET /api/v1/agents/:agentID` | Bearer | Get one agent |
 | `GET /api/v1/agents` | none | List/filter agents |
+| `POST /api/v1/deployments` | Bearer/operator | Schedule and record a remote deployment |
+| `GET /api/v1/deployments` | Bearer/operator | List deployments |
+| `GET /api/v1/deployments/:deploymentID` | Bearer/operator | Get one deployment |
+| `PUT /api/v1/deployments/:deploymentID/escrow` | Bearer/operator | Link an escrow id to a deployment |
+| `GET /api/v1/deployments/:deploymentID/escrow` | Bearer/operator | Read the on-chain escrow status |
 
 `GET /api/v1/agents` accepts `owner_type=user|platform`, `owner_id`, and
 repeatable `label=key=value` filters (for example,
@@ -63,6 +68,28 @@ agent, so a token issued to one agent cannot act for another.
 The token is compared in constant time. There is no expiry yet; when the store
 is backed by persistence the token should be stored only as a hash
 (`TODO` in `internal/agent/store.go`).
+
+## Deployment escrow status
+
+Deployments may optionally carry an `escrow_id` that links them to an existing
+payment-escrow record on the Stellar/Soroban contract. The control plane does
+not create escrows automatically; an operator links an id out of band:
+
+```bash
+curl -X PUT http://127.0.0.1:8080/api/v1/deployments/$DEPLOYMENT_ID/escrow \
+  -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"escrow_id": 1}'
+
+curl http://127.0.0.1:8080/api/v1/deployments/$DEPLOYMENT_ID/escrow \
+  -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN"
+```
+
+The status read calls the configured `PAYMENT_ESCROW_CONTRACT_ID` over Soroban
+RPC and returns `Pending`, `Released` or `Refunded`. It is read-only and never
+submits a transaction. When no contract id is configured, `PUT` still links the
+id but `GET` returns `503`. Use `scripts/check-escrow-status.sh` for a manual
+testnet check.
 
 ## Development
 

@@ -93,6 +93,14 @@ func main() {
 	stClient := stellar.NewClient(stCfg.Stellar)
 	stellarHandler := stellarhandler.NewHandler(stStore, stClient, stCfg.Stellar.Network, log)
 
+	// Escrow status is read-only and only enabled when an escrow contract id
+	// is configured; linking an id to a deployment still works without it.
+	if stCfg.Stellar.ContractID == "" {
+		log.Warn("PAYMENT_ESCROW_CONTRACT_ID is not set: deployment escrow status reads are disabled")
+	} else {
+		deploymentHandler.WithEscrowProvider(stClient, stCfg.Stellar.Network)
+	}
+
 	// Setup HTTP server with all routes
 	srv := server.NewServer(agentHandler, commandHandler, deploymentHandler, stellarHandler, log)
 
@@ -119,6 +127,9 @@ func main() {
 		log.Info("  POST /api/v1/deployments                        (operator token)")
 		log.Info("  GET  /api/v1/deployments                        (operator token)")
 		log.Info("  GET  /api/v1/deployments/:deploymentID          (operator token)")
+		log.Info("  PUT  /api/v1/deployments/:deploymentID/escrow  (operator token)")
+		log.Info("  POST /api/v1/deployments/:deploymentID/escrow  (operator token)")
+		log.Info("  GET  /api/v1/deployments/:deploymentID/escrow  (operator token)")
 		log.Info("  POST /api/v1/scheduler/select                   (operator token)")
 		log.Info("  POST /api/v1/stellar/accounts")
 		log.Info("  GET  /api/v1/stellar/accounts")

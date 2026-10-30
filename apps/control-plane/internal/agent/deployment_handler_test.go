@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,9 +9,26 @@ import (
 	"testing"
 	"time"
 
+	sdk "github.com/byoi-platform/stellar"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
+
+type fakeEscrowStatusProvider struct {
+	status sdk.EscrowStatus
+	err    error
+	gotID  uint64
+	calls  int
+}
+
+func (f *fakeEscrowStatusProvider) GetEscrowStatus(_ context.Context, escrowID uint64) (sdk.EscrowStatus, error) {
+	f.calls++
+	f.gotID = escrowID
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.status, nil
+}
 
 func testDeploymentRouter(t *testing.T) (*gin.Engine, *AgentStore, *DeploymentStore) {
 	t.Helper()
@@ -23,7 +41,8 @@ func testDeploymentRouter(t *testing.T) (*gin.Engine, *AgentStore, *DeploymentSt
 	deployments := NewDeploymentStore()
 	queue := NewCommandQueue(0, 0)
 	scheduler := NewSchedulerWithOptions(store, time.Minute, time.Now)
-	deploymentHandler := NewDeploymentHandler(store, deployments, queue, scheduler, testOperatorToken, log)
+	deploymentHandler := NewDeploymentHandler(store, deployments, queue, scheduler, testOperatorToken, log).
+		WithEscrowProvider(&fakeEscrowStatusProvider{status: sdk.EscrowStatusPending}, sdk.NetworkTestnet)
 	commandHandler := NewCommandHandler(store, queue, testOperatorToken, log).WithDeploymentStore(deployments)
 
 	r := gin.New()
@@ -31,6 +50,8 @@ func testDeploymentRouter(t *testing.T) (*gin.Engine, *AgentStore, *DeploymentSt
 	v1.POST("/deployments", deploymentHandler.RequireOperatorToken(), deploymentHandler.CreateDeployment)
 	v1.GET("/deployments", deploymentHandler.RequireOperatorToken(), deploymentHandler.ListDeployments)
 	v1.GET("/deployments/:deploymentID", deploymentHandler.RequireOperatorToken(), deploymentHandler.GetDeployment)
+	v1.PUT("/deployments/:deploymentID/escrow", deploymentHandler.RequireOperatorToken(), deploymentHandler.LinkDeploymentEscrow)
+	v1.GET("/deployments/:deploymentID/escrow", deploymentHandler.RequireOperatorToken(), deploymentHandler.GetDeploymentEscrow)
 	v1.POST("/scheduler/select", deploymentHandler.RequireOperatorToken(), deploymentHandler.SelectAgent)
 	v1.GET("/agents/:agentID/commands/next", commandHandler.RequireAgentSession(), commandHandler.ClaimCommand)
 	v1.POST("/agents/:agentID/commands/:commandID/result", commandHandler.RequireAgentSession(), commandHandler.CompleteCommand)

@@ -270,6 +270,8 @@ channel. All endpoints below require the operator token.
 | `POST` | `/api/v1/deployments` | Schedule an agent, enqueue a deploy command and create a deployment record |
 | `GET` | `/api/v1/deployments` | List deployment records (filters: `agent_id`, `state`) |
 | `GET` | `/api/v1/deployments/:deploymentID` | Read one deployment record |
+| `PUT` | `/api/v1/deployments/:deploymentID/escrow` | Link an existing escrow id to a deployment |
+| `GET` | `/api/v1/deployments/:deploymentID/escrow` | Read the on-chain escrow status (read-only) |
 | `POST` | `/api/v1/scheduler/select` | Run the scheduler without enqueueing a command |
 
 Create request:
@@ -306,6 +308,13 @@ Deployment state follows the command lifecycle:
 | `running` | An agent claims the command |
 | `succeeded` | The agent reports success |
 | `failed` | The agent reports failure |
+
+Deployments may also carry an optional `escrow_id`. Creation accepts it, or it
+can be attached later with `PUT /deployments/:id/escrow`. The read endpoint
+queries the configured `PAYMENT_ESCROW_CONTRACT_ID` through the
+[`packages/stellar`](../packages/stellar/) client and returns the on-chain
+status (`Pending`, `Released`, `Refunded`). Escrow creation, release and refund
+remain out of scope for this read path.
 
 `nova deploy --target remote` uses this API. `--target local` (the default)
 still calls the loopback agent API directly and does not touch the control
