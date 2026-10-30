@@ -32,9 +32,14 @@ The thin vertical slice, end to end:
 - Tests on both sides and an end-to-end smoke test in
   `apps/control-plane/test-api.sh`.
 
-Not in this slice: the CLI half of remote deploy (`nova deploy --server …`),
-long-polling, persistent queues and multi-user control plane accounts. They are
-listed in [Follow-ups](#follow-ups).
+The CLI half is now available too: `nova deploy --target remote` (or
+`--target usenova`) asks the control plane for placement, persists a deployment
+record and enqueues the deploy command. `--target local` (or `--target byoi`,
+the default) keeps using the loopback agent API. See
+[Deployments and scheduling](#deployments-and-scheduling).
+
+Still out of scope: long-polling, persistent command queues and multi-user
+control plane accounts. They are listed in [Follow-ups](#follow-ups).
 
 ## Context
 
@@ -255,6 +260,57 @@ The agent can only ever see its own commands: the CP compares the bearer token
 in the request with the session token issued to the agent named in the path, so
 a token issued to agent A cannot read or complete agent B's commands.
 
+### Deployments and scheduling
+
+Remote deployments add durable records and placement on top of the command
+channel. All endpoints below require the operator token.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/v1/deployments` | Schedule an agent, enqueue a deploy command and create a deployment record |
+| `GET` | `/api/v1/deployments` | List deployment records (filters: `agent_id`, `state`) |
+| `GET` | `/api/v1/deployments/:deploymentID` | Read one deployment record |
+| `POST` | `/api/v1/scheduler/select` | Run the scheduler without enqueueing a command |
+
+Create request:
+
+```json
+{
+  "service": {
+    "name": "my-api",
+    "image": "nginx:latest",
+    "ports": { "8080": "80" }
+  },
+  "resource_hints": { "cpu_count": 1, "memory_bytes": 536870912 }
+}
+```
+
+The `service` object is the same snake_case spec the agent's local API accepts;
+it is forwarded unchanged as the deploy command payload. The control plane
+stores only the deployment ID, agent ID, service name, image, state, requester
+and timestamps. It deliberately does not store the full spec because
+environment variables may contain secrets.
+
+Scheduler policy is intentionally naive. Only platform-owned agents with Docker
+capability, a heartbeat within two minutes, and a reported inventory are
+eligible. Hints filter out agents that are too small; the remaining agents are
+scored by heartbeat freshness, CPU/memory capacity and running-service load.
+When nothing qualifies the API returns `503` with
+`No platform capacity available`.
+
+Deployment state follows the command lifecycle:
+
+| Deployment state | Set when |
+| --- | --- |
+| `pending` | The deploy command is queued |
+| `running` | An agent claims the command |
+| `succeeded` | The agent reports success |
+| `failed` | The agent reports failure |
+
+`nova deploy --target remote` uses this API. `--target local` (the default)
+still calls the loopback agent API directly and does not touch the control
+plane.
+
 ## Authentication and authorization
 
 **Agent → CP: session token.** At registration the CP issues a random 256-bit
@@ -349,7 +405,6 @@ than on the host.
   operator token.
 - Short-lived, rotating agent credentials (or mTLS) instead of a long-lived
   session token; storing only a hash of the token on the CP side.
-- Persisting the command queue (the agent registry is being moved to SQLite in
-  issue #7; the queue should follow) so commands survive a CP restart.
-- The CLI gaining a `--server`/`--agent` mode that talks to the CP instead of
-  the local agent, which is the user-visible half of "remote deploy".
+- Persisting the command queue (deployment records are durable, but queued
+  commands still live in memory) so commands survive a CP restart.
+- A CLI command to list and inspect deployment records (`nova deployments`).

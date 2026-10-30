@@ -440,6 +440,24 @@ func (s *AgentStore) ListAgentsFiltered(filter AgentFilter) []*Agent {
 	return agents
 }
 
+// SnapshotAgentsFiltered returns copies of the registered agents matching
+// filter. Callers that need to read mutable fields (heartbeat, status) after
+// releasing the store lock should use this instead of ListAgentsFiltered.
+func (s *AgentStore) SnapshotAgentsFiltered(filter AgentFilter) []Agent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	agents := make([]Agent, 0, len(s.agents))
+	for _, agent := range s.agents {
+		if !agentMatchesFilter(agent, filter) {
+			continue
+		}
+		agents = append(agents, *agent)
+	}
+
+	return agents
+}
+
 func agentMatchesFilter(agent *Agent, filter AgentFilter) bool {
 	if filter.OwnerType != "" && agent.OwnerType != filter.OwnerType {
 		return false

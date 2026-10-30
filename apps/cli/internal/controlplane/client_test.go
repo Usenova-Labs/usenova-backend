@@ -245,3 +245,85 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestCreateDeployment(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	var gotBody CreateDeploymentRequest
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(Deployment{
+			ID:          "dep-1",
+			AgentID:     "platform-1",
+			ServiceName: "web",
+			Image:       "nginx:alpine",
+			State:       "pending",
+			CommandID:   "cmd-1",
+		})
+	}))
+	defer srv.Close()
+
+	cl := newTestClient(t, srv.URL, "operator-token")
+	res, err := cl.CreateDeployment(context.Background(), CreateDeploymentRequest{
+		Service:       map[string]any{"name": "web", "image": "nginx:alpine"},
+		Requester:     "cli",
+		ResourceHints: &ResourceHints{CPUCount: 1},
+	})
+	if err != nil {
+		t.Fatalf("CreateDeployment: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/v1/deployments" {
+		t.Errorf("request = %s %s", gotMethod, gotPath)
+	}
+	if gotAuth != "Bearer operator-token" {
+		t.Errorf("Authorization = %q", gotAuth)
+	}
+	if gotBody.Service["name"] != "web" || gotBody.Service["image"] != "nginx:alpine" {
+		t.Errorf("service = %+v", gotBody.Service)
+	}
+	if gotBody.Requester != "cli" || gotBody.ResourceHints == nil || gotBody.ResourceHints.CPUCount != 1 {
+		t.Errorf("body = %+v", gotBody)
+	}
+	if res.ID != "dep-1" || res.AgentID != "platform-1" || res.State != "pending" {
+		t.Errorf("response = %+v", res)
+	}
+}
+
+func TestListAndGetDeployments(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/deployments":
+			_ = json.NewEncoder(w).Encode(DeploymentListResponse{
+				Deployments: []*Deployment{{ID: "dep-1", State: "succeeded"}},
+				Total:       1,
+			})
+		case "/api/v1/deployments/dep-1":
+			_ = json.NewEncoder(w).Encode(Deployment{ID: "dep-1", State: "succeeded"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cl := newTestClient(t, srv.URL, "")
+	list, err := cl.ListDeployments(context.Background())
+	if err != nil {
+		t.Fatalf("ListDeployments: %v", err)
+	}
+	if list.Total != 1 || list.Deployments[0].ID != "dep-1" {
+		t.Errorf("list = %+v", list)
+	}
+
+	got, err := cl.GetDeployment(context.Background(), "dep-1")
+	if err != nil {
+		t.Fatalf("GetDeployment: %v", err)
+	}
+	if got.ID != "dep-1" || got.State != "succeeded" {
+		t.Errorf("deployment = %+v", got)
+	}
+}
