@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/byoi-platform/cli/internal/client"
+	"github.com/byoi-platform/cli/internal/controlplane"
 	"github.com/spf13/cobra"
 )
 
@@ -49,7 +51,7 @@ func agentCmd() *cobra.Command {
 }
 
 func deployCmd() *cobra.Command {
-	var name, image, restart string
+	var name, image, restart, target string
 	var ports []string
 	var envs []string
 	var healthPath string
@@ -57,12 +59,16 @@ func deployCmd() *cobra.Command {
 	var maxRestarts, restartWindow, restartBackoff int
 	c := &cobra.Command{
 		Use:   "deploy",
-		Short: "Deploy a service to local agent",
+		Short: "Deploy a service to a local agent or the Usenova platform",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" || image == "" {
 				return fmt.Errorf("--name and --image required")
 			}
 			if err := client.ValidateServiceName(name); err != nil {
+				return err
+			}
+			deployTarget, err := parseDeployTarget(target)
+			if err != nil {
 				return err
 			}
 			spec := map[string]any{
@@ -110,6 +116,10 @@ func deployCmd() *cobra.Command {
 				spec["health_check"] = hc
 			}
 			ctx := context.Background()
+			if deployTarget == deployTargetRemote {
+				return deployRemote(ctx, spec, name)
+			}
+
 			cl, err := newClient()
 			if err != nil {
 				return err
@@ -127,6 +137,7 @@ func deployCmd() *cobra.Command {
 	}
 	c.Flags().StringVar(&name, "name", "", "service name")
 	c.Flags().StringVar(&image, "image", "", "docker image")
+	c.Flags().StringVar(&target, "target", "local", "deploy target: local|byoi or remote|usenova")
 	c.Flags().StringVar(&restart, "restart", "", "restart policy (no|always|on-failure|unless-stopped)")
 	c.Flags().StringSliceVar(&ports, "port", nil, "port mapping host:container (repeatable)")
 	c.Flags().StringArrayVar(&envs, "env", nil, "env KEY=VALUE (repeatable)")
@@ -138,6 +149,62 @@ func deployCmd() *cobra.Command {
 	c.MarkFlagRequired("name")
 	c.MarkFlagRequired("image")
 	return c
+}
+
+type deployTarget string
+
+const (
+	deployTargetLocal  deployTarget = "local"
+	deployTargetRemote deployTarget = "remote"
+)
+
+// parseDeployTarget accepts the friendly aliases for the two deployment paths.
+// local/byoi keep the existing loopback agent API behavior; remote/usenova go
+// through the control plane scheduler and command channel.
+func parseDeployTarget(raw string) (deployTarget, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "local", "byoi":
+		return deployTargetLocal, nil
+	case "remote", "usenova":
+		return deployTargetRemote, nil
+	default:
+		return "", fmt.Errorf("invalid --target %q (want local|byoi or remote|usenova)", raw)
+	}
+}
+
+// deployRemote creates a deployment through the control plane. The control
+// plane schedules a platform agent and enqueues the existing remote deploy
+// command; the agent executes it on its next poll.
+func deployRemote(ctx context.Context, spec map[string]any, name string) error {
+	cp, err := newControlPlaneClient()
+	if err != nil {
+		return fmt.Errorf("remote deploy is not configured: %w", err)
+	}
+
+	deployment, err := cp.CreateDeployment(ctx, controlplane.CreateDeploymentRequest{Service: spec})
+	if err != nil {
+		var apiErr *controlplane.APIError
+		if errors.As(err, &apiErr) {
+			switch {
+			case apiErr.StatusCode == http.StatusServiceUnavailable &&
+				strings.Contains(strings.ToLower(apiErr.Title+" "+apiErr.Message), "capacity"):
+				return fmt.Errorf("no platform capacity available: %s", apiErr.Message)
+			case apiErr.StatusCode == http.StatusServiceUnavailable:
+				return fmt.Errorf("control plane is not configured for remote deploy: %s", apiErr.Error())
+			case apiErr.StatusCode == http.StatusUnauthorized:
+				return fmt.Errorf("control plane rejected the operator token: %s", apiErr.Error())
+			}
+			return fmt.Errorf("remote deploy failed: %w", err)
+		}
+		return fmt.Errorf("could not reach control plane at %s: %w", controlPlaneURL, err)
+	}
+
+	if output == "json" {
+		return printJSON(deployment)
+	}
+	fmt.Printf("Deployed %s to agent %s via control plane (deployment %s, state %s)\n",
+		name, deployment.AgentID, deployment.ID, deployment.State)
+	return nil
 }
 
 // reconcileDeploy handles a deploy call that failed on the client timeout.

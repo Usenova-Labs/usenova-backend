@@ -29,6 +29,10 @@ type CommandHandler struct {
 	// operator-facing part of the command API is disabled: an unauthenticated
 	// control plane must never be able to enqueue a deployment.
 	operatorToken string
+
+	// deployments links command lifecycle changes back to deployment records.
+	// It is optional so the command channel keeps working without one.
+	deployments *DeploymentStore
 }
 
 // NewCommandHandler creates a command handler.
@@ -41,15 +45,27 @@ func NewCommandHandler(store *AgentStore, queue *CommandQueue, operatorToken str
 	}
 }
 
+// WithDeploymentStore links command state changes to deployment records.
+func (h *CommandHandler) WithDeploymentStore(store *DeploymentStore) *CommandHandler {
+	h.deployments = store
+	return h
+}
+
 // RequireOperatorToken rejects operator-facing calls that do not carry the
 // operator token. When no operator token is configured the operator-facing
 // part of the command API is disabled entirely.
 func (h *CommandHandler) RequireOperatorToken() gin.HandlerFunc {
+	return requireOperatorToken(h.operatorToken, h.logger)
+}
+
+// requireOperatorToken is shared by the command and deployment APIs so both
+// fail closed when the control plane has no operator token configured.
+func requireOperatorToken(operatorToken string, logger *logrus.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if h.operatorToken == "" {
+		if operatorToken == "" {
 			// The startup log already warns about this; logging every
 			// request would only add noise.
-			h.logger.Debug("Command API is disabled: no operator token configured")
+			logger.Debug("Operator API is disabled: no operator token configured")
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, ErrorResponse{
 				Error:   "Command API is disabled",
 				Message: "the control plane has no operator token configured",
@@ -58,7 +74,7 @@ func (h *CommandHandler) RequireOperatorToken() gin.HandlerFunc {
 		}
 
 		token, ok := sessionTokenFromHeader(c.GetHeader("Authorization"))
-		if !ok || !sessionTokenEqual(token, h.operatorToken) {
+		if !ok || !sessionTokenEqual(token, operatorToken) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
 				Error: "Unauthorized",
 			})
@@ -244,6 +260,8 @@ func (h *CommandHandler) ClaimCommand(c *gin.Context) {
 		"type":       record.Command.Type,
 	}).Info("Command claimed")
 
+	h.recordDeploymentState(record.Command.ID, DeploymentStateRunning)
+
 	c.JSON(http.StatusOK, record.Command)
 }
 
@@ -299,5 +317,22 @@ func (h *CommandHandler) CompleteCommand(c *gin.Context) {
 		"status":     record.Status,
 	}).Info("Command completed")
 
+	state := DeploymentStateFailed
+	if record.Status == CommandStatusSucceeded {
+		state = DeploymentStateSucceeded
+	}
+	h.recordDeploymentState(commandID, state)
+
 	c.JSON(http.StatusOK, record)
+}
+
+// recordDeploymentState mirrors a command lifecycle change onto its deployment
+// record. Commands that are not deployments are ignored.
+func (h *CommandHandler) recordDeploymentState(commandID string, state DeploymentState) {
+	if h.deployments == nil {
+		return
+	}
+	if _, err := h.deployments.UpdateStateByCommandID(commandID, state); err != nil && !errors.Is(err, ErrDeploymentNotFound) {
+		h.logger.WithError(err).WithField("command_id", commandID).Error("Failed to update deployment state")
+	}
 }

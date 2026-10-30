@@ -138,6 +138,41 @@ type BalanceResponse struct {
 	Balance []StellarBalance `json:"balances"`
 }
 
+// ResourceHints constrain scheduler placement for a remote deployment.
+type ResourceHints struct {
+	CPUCount    int   `json:"cpu_count,omitempty"`
+	MemoryBytes int64 `json:"memory_bytes,omitempty"`
+}
+
+// CreateDeploymentRequest asks the control plane to place and enqueue a remote
+// deployment. Service is the same service spec the local agent API accepts.
+type CreateDeploymentRequest struct {
+	Service       map[string]any `json:"service"`
+	AgentID       string         `json:"agent_id,omitempty"`
+	Requester     string         `json:"requester,omitempty"`
+	ResourceHints *ResourceHints `json:"resource_hints,omitempty"`
+}
+
+// Deployment mirrors a control-plane deployment record.
+type Deployment struct {
+	ID          string            `json:"id"`
+	AgentID     string            `json:"agent_id"`
+	ServiceName string            `json:"service_name"`
+	Image       string            `json:"image"`
+	State       string            `json:"state"`
+	CommandID   string            `json:"command_id,omitempty"`
+	Requester   string            `json:"requester,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+}
+
+// DeploymentListResponse is the control plane's deployment listing payload.
+type DeploymentListResponse struct {
+	Deployments []*Deployment `json:"deployments"`
+	Total       int           `json:"total"`
+}
+
 // ErrorResponse mirrors the control plane's error envelope.
 type ErrorResponse struct {
 	Error   string `json:"error"`
@@ -267,6 +302,46 @@ func (c *Client) StellarBalance(ctx context.Context, address, asset string) (*Ba
 		return nil, err
 	}
 	var out BalanceResponse
+	if err := c.decode(resp, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreateDeployment asks the control plane to place and enqueue a remote
+// deployment.
+func (c *Client) CreateDeployment(ctx context.Context, req CreateDeploymentRequest) (*Deployment, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/v1/deployments", req)
+	if err != nil {
+		return nil, err
+	}
+	var out Deployment
+	if err := c.decode(resp, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListDeployments returns the control plane's deployment records.
+func (c *Client) ListDeployments(ctx context.Context) (*DeploymentListResponse, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/v1/deployments", nil)
+	if err != nil {
+		return nil, err
+	}
+	var out DeploymentListResponse
+	if err := c.decode(resp, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetDeployment returns a deployment record by ID.
+func (c *Client) GetDeployment(ctx context.Context, id string) (*Deployment, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/v1/deployments/"+url.PathEscape(id), nil)
+	if err != nil {
+		return nil, err
+	}
+	var out Deployment
 	if err := c.decode(resp, &out); err != nil {
 		return nil, err
 	}

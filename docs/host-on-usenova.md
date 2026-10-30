@@ -54,11 +54,12 @@ and [docs/remote-deploy.md](remote-deploy.md) for the command channel design.
 In the Host-on-Usenova model, Usenova operates the fleet. Users do not need to
 own or manage any servers. They pay per deploy using Stellar.
 
-**Planned flow:**
+**Flow:**
 
-1. User runs `nova deploy --name web --image nginx:alpine --server cloud`.
+1. User runs `nova deploy --name web --image nginx:alpine --target remote`.
 2. The CLI tells the control plane to find a free slot in the fleet.
-3. The control plane picks an agent it manages, enqueues a deploy command.
+3. The control plane picks a platform agent, persists a deployment record and
+   enqueues a deploy command.
 4. The consumer authorizes and submits a `create_escrow` transaction, locking
    their funds in the Soroban contract. (Who constructs and submits this
    transaction — CLI, control plane, or a separate wallet step — is an open

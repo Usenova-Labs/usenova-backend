@@ -11,15 +11,16 @@ import (
 
 // Server holds the HTTP server dependencies
 type Server struct {
-	router         *gin.Engine
-	agentHandler   *agent.Handler
-	commandHandler *agent.CommandHandler
-	stellarHandler *stellarhandler.Handler
-	logger         *logrus.Logger
+	router            *gin.Engine
+	agentHandler      *agent.Handler
+	commandHandler    *agent.CommandHandler
+	deploymentHandler *agent.DeploymentHandler
+	stellarHandler    *stellarhandler.Handler
+	logger            *logrus.Logger
 }
 
 // NewServer creates a new HTTP server with all routes configured
-func NewServer(agentHandler *agent.Handler, commandHandler *agent.CommandHandler, stellarHandler *stellarhandler.Handler, logger *logrus.Logger) *Server {
+func NewServer(agentHandler *agent.Handler, commandHandler *agent.CommandHandler, deploymentHandler *agent.DeploymentHandler, stellarHandler *stellarhandler.Handler, logger *logrus.Logger) *Server {
 	router := gin.Default()
 
 	// Set up middleware
@@ -27,11 +28,12 @@ func NewServer(agentHandler *agent.Handler, commandHandler *agent.CommandHandler
 	router.Use(gin.Recovery())
 
 	s := &Server{
-		router:         router,
-		agentHandler:   agentHandler,
-		commandHandler: commandHandler,
-		stellarHandler: stellarHandler,
-		logger:         logger,
+		router:            router,
+		agentHandler:      agentHandler,
+		commandHandler:    commandHandler,
+		deploymentHandler: deploymentHandler,
+		stellarHandler:    stellarHandler,
+		logger:            logger,
 	}
 
 	s.setupRoutes()
@@ -78,9 +80,27 @@ func (s *Server) setupRoutes() {
 			agents.POST("/:agentID/commands/:commandID/result", s.commandHandler.RequireAgentSession(), s.commandHandler.CompleteCommand)
 		}
 
+		// Deployment records and scheduler placement. Both require the
+		// operator token and are disabled when it is not configured.
+		if s.deploymentHandler != nil {
+			deployments := v1.Group("/deployments")
+			{
+				deployments.POST("", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.CreateDeployment)
+				deployments.GET("", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.ListDeployments)
+				deployments.GET("/:deploymentID", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.GetDeployment)
+				deployments.PUT("/:deploymentID/escrow", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.LinkDeploymentEscrow)
+				deployments.POST("/:deploymentID/escrow", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.LinkDeploymentEscrow)
+				deployments.GET("/:deploymentID/escrow", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.GetDeploymentEscrow)
+			}
+
+			scheduler := v1.Group("/scheduler")
+			{
+				scheduler.POST("/select", s.deploymentHandler.RequireOperatorToken(), s.deploymentHandler.SelectAgent)
+			}
+		}
+
 		// TODO: Add other API groups
 		// services := v1.Group("/services")
-		// deployments := v1.Group("/deployments")
 		// payments := v1.Group("/payments")
 
 		// Stellar account linking and balance queries
