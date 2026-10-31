@@ -65,16 +65,24 @@ func buildContainerConfig(cfg ContainerConfig) (*container.Config, *container.Ho
 		RestartPolicy: container.RestartPolicy{Name: getRestartPolicy(cfg.RestartPolicy)},
 		ExtraHosts:    cfg.ExtraHosts,
 		Binds:         cfg.Volumes, // "host:container[:mode]" entries
-		// TODO: advanced networking (custom networks, aliases) beyond the
-		// default bridge; Mounts API for tmpfs/named volumes.
+		// An empty NetworkMode keeps Docker's default bridge, preserving the
+		// behavior of specs that do not configure networking.
+		NetworkMode: container.NetworkMode(cfg.Network),
+		// TODO: network aliases and Mounts API for tmpfs/named volumes.
 	}
 
-	// Resource limits (optional)
+	// Resource limits/reservations (optional; zero leaves Docker's defaults).
 	if cfg.NanoCPUs > 0 {
 		hostConfig.NanoCPUs = cfg.NanoCPUs
 	}
 	if cfg.Memory > 0 {
 		hostConfig.Memory = cfg.Memory
+	}
+	if cfg.CPUShares > 0 {
+		hostConfig.CPUShares = cfg.CPUShares
+	}
+	if cfg.MemoryReservation > 0 {
+		hostConfig.MemoryReservation = cfg.MemoryReservation
 	}
 
 	return containerConfig, hostConfig, &portBindings

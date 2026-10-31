@@ -57,6 +57,11 @@ func deployCmd() *cobra.Command {
 	var healthPath string
 	var healthPort int
 	var maxRestarts, restartWindow, restartBackoff int
+	var cpus float64
+	var cpuShares int64
+	var memory, memoryReservation string
+	var networkMode, networkName string
+	var networkInternal bool
 	c := &cobra.Command{
 		Use:   "deploy",
 		Short: "Deploy a service to a local agent or the Usenova platform",
@@ -86,6 +91,45 @@ func deployCmd() *cobra.Command {
 			}
 			if restartBackoff > 0 {
 				spec["restart_backoff_seconds"] = restartBackoff
+			}
+			resources := map[string]any{}
+			if cpus < 0 {
+				return fmt.Errorf("--cpus must not be negative")
+			}
+			if cpus > 0 {
+				resources["cpu_limit"] = int64(cpus * 1e9)
+			}
+			if cpuShares < 0 {
+				return fmt.Errorf("--cpu-shares must not be negative")
+			}
+			if cpuShares > 0 {
+				resources["cpu_reserve"] = cpuShares
+			}
+			if memory != "" {
+				parsed, err := parseMemoryBytes(memory)
+				if err != nil {
+					return fmt.Errorf("--memory: %w", err)
+				}
+				resources["memory_limit"] = parsed
+			}
+			if memoryReservation != "" {
+				parsed, err := parseMemoryBytes(memoryReservation)
+				if err != nil {
+					return fmt.Errorf("--memory-reservation: %w", err)
+				}
+				resources["memory_reserve"] = parsed
+			}
+			if len(resources) > 0 {
+				spec["resources"] = resources
+			}
+			if networkMode != "" {
+				spec["network_mode"] = networkMode
+			}
+			if networkName != "" {
+				spec["network_name"] = networkName
+			}
+			if networkInternal {
+				spec["network_internal"] = true
 			}
 			if len(ports) > 0 {
 				pm := map[string]string{}
@@ -146,6 +190,13 @@ func deployCmd() *cobra.Command {
 	c.Flags().IntVar(&maxRestarts, "max-restarts", 0, "max restarts per window (0 = agent default, -1 = unlimited)")
 	c.Flags().IntVar(&restartWindow, "restart-window", 0, "restart window in seconds (0 = agent default)")
 	c.Flags().IntVar(&restartBackoff, "restart-backoff", 0, "base restart backoff in seconds (0 = agent default)")
+	c.Flags().Float64Var(&cpus, "cpus", 0, "hard CPU limit in CPUs (e.g. 0.5 or 2)")
+	c.Flags().Int64Var(&cpuShares, "cpu-shares", 0, "relative CPU weight/reservation (Docker CpuShares, e.g. 1024)")
+	c.Flags().StringVar(&memory, "memory", "", "hard memory limit (e.g. 512m, 1g, or bytes)")
+	c.Flags().StringVar(&memoryReservation, "memory-reservation", "", "soft memory reservation (e.g. 256m)")
+	c.Flags().StringVar(&networkMode, "network-mode", "", "network mode: default|bridge|none|dedicated|per-service")
+	c.Flags().StringVar(&networkName, "network", "", "attach to an existing Docker network")
+	c.Flags().BoolVar(&networkInternal, "network-internal", false, "create dedicated network without external connectivity")
 	c.MarkFlagRequired("name")
 	c.MarkFlagRequired("image")
 	return c

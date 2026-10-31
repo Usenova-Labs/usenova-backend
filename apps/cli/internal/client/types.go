@@ -21,10 +21,23 @@ type ServiceSpec struct {
 	Volumes       []string          `json:"volumes,omitempty"`
 	HealthCheck   *HealthCheck      `json:"health_check,omitempty"`
 	RestartPolicy string            `json:"restart_policy,omitempty"`
+	Resources     *ResourceLimits   `json:"resources,omitempty"`
+
+	NetworkMode     string `json:"network_mode,omitempty"`
+	NetworkName     string `json:"network_name,omitempty"`
+	NetworkInternal bool   `json:"network_internal,omitempty"`
 
 	MaxRestarts           int `json:"max_restarts,omitempty"`
 	RestartWindowSeconds  int `json:"restart_window_seconds,omitempty"`
 	RestartBackoffSeconds int `json:"restart_backoff_seconds,omitempty"`
+}
+
+// ResourceLimits mirrors the agent-side memory/CPU constraints.
+type ResourceLimits struct {
+	CPULimit      int64 `json:"cpu_limit,omitempty"`
+	MemoryLimit   int64 `json:"memory_limit,omitempty"`
+	CPUReserve    int64 `json:"cpu_reserve,omitempty"`
+	MemoryReserve int64 `json:"memory_reserve,omitempty"`
 }
 
 // HealthCheck mirrors the agent-side health check configuration.

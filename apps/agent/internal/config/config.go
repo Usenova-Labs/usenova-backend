@@ -44,6 +44,18 @@ type Config struct {
 	// RestartBackoff is the base delay between restart attempts. It doubles
 	// with every consecutive attempt.
 	RestartBackoff time.Duration
+
+	// NetworkMode is the default Docker network policy for deployments that
+	// do not set network_mode in their service spec. "bridge" keeps the
+	// historical behavior; "dedicated" gives every service its own network.
+	NetworkMode string
+
+	// NetworkName attaches services to an existing shared Docker network.
+	NetworkName string
+
+	// NetworkInternal makes agent-created dedicated networks internal
+	// (no external connectivity).
+	NetworkInternal bool
 }
 
 // Load reads configuration from environment variables
@@ -162,6 +174,28 @@ func Load(version string) (*Config, error) {
 		return nil, fmt.Errorf("RESTART_BACKOFF must not be negative")
 	}
 
+	// Optional: Docker network policy. The default preserves Docker's shared
+	// bridge so existing deployments behave exactly as before.
+	config.NetworkMode = strings.ToLower(envAny("AGENT_NETWORK_MODE", "DOCKER_NETWORK_MODE", "NETWORK_MODE"))
+	if config.NetworkMode == "" {
+		config.NetworkMode = "bridge"
+	}
+	switch config.NetworkMode {
+	case "bridge", "default":
+		config.NetworkMode = "bridge"
+	case "none", "dedicated", "per-service", "per_service":
+	case "host":
+		return nil, fmt.Errorf("AGENT_NETWORK_MODE=host is not supported: host networking bypasses container isolation")
+	default:
+		return nil, fmt.Errorf("invalid AGENT_NETWORK_MODE %q (want bridge|default|none|dedicated|per-service)", config.NetworkMode)
+	}
+	config.NetworkName = envAny("AGENT_NETWORK_NAME", "DOCKER_NETWORK_NAME")
+	internal, err := boolEnvAny(false, "AGENT_NETWORK_INTERNAL", "DOCKER_NETWORK_INTERNAL")
+	if err != nil {
+		return nil, err
+	}
+	config.NetworkInternal = internal
+
 	return config, nil
 }
 
@@ -186,6 +220,35 @@ func labelsEnv(name string) (map[string]string, error) {
 		labels[key] = strings.TrimSpace(value)
 	}
 	return labels, nil
+}
+
+// envAny returns the first non-empty value among the given environment
+// variables. Aliases keep older deployment manifests working while the
+// AGENT_* names remain the documented form.
+func envAny(names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// boolEnvAny reads a boolean from the first non-empty alias, defaulting when
+// all are unset.
+func boolEnvAny(def bool, names ...string) (bool, error) {
+	for _, name := range names {
+		raw := strings.TrimSpace(os.Getenv(name))
+		if raw == "" {
+			continue
+		}
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return false, fmt.Errorf("invalid %s format: %s (use true or false)", name, raw)
+		}
+		return parsed, nil
+	}
+	return def, nil
 }
 
 // durationEnv reads a duration from the environment. It accepts a duration
@@ -214,7 +277,7 @@ func (c *Config) String() string {
 	if c.PlatformBootstrapToken != "" {
 		registration = "platform"
 	}
-	return fmt.Sprintf("Config{ControlPlaneURL=%s, AgentID=%s, HeartbeatInterval=%v, Version=%s, Registration=%s, API=%s, Restarts=%d/%v backoff=%v}",
+	return fmt.Sprintf("Config{ControlPlaneURL=%s, AgentID=%s, HeartbeatInterval=%v, Version=%s, Registration=%s, API=%s, Restarts=%d/%v backoff=%v, Network=%s}",
 		c.ControlPlaneURL, c.AgentID, c.HeartbeatInterval, c.Version, registration, api,
-		c.RestartMaxRestarts, c.RestartWindow, c.RestartBackoff)
+		c.RestartMaxRestarts, c.RestartWindow, c.RestartBackoff, c.NetworkMode)
 }

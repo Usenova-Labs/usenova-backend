@@ -203,6 +203,25 @@ the compute marketplace.
 - WebSocket heartbeats to detect connection issues
 - IP allowlisting for Control Plane API (optional)
 
+### Container Isolation and Resource Limits
+
+The agent maps a deployment's `resources` object onto Docker's host config:
+`cpu_limit` becomes `NanoCpus`, `memory_limit` becomes `Memory`, `cpu_reserve`
+becomes `CpuShares`, and `memory_reserve` becomes `MemoryReservation`. All are
+optional; zero values leave Docker's defaults in place, which keeps deployments
+that do not configure limits backward compatible. The applied values are
+visible with `docker inspect` (see
+[apps/agent/README.md](../apps/agent/README.md#resource-limits-and-network-isolation)).
+
+Networking defaults to Docker's shared bridge. A service can request
+`network_mode: none` or `network_mode: dedicated`; the latter creates an
+agent-owned `usenova-<service>` network and removes it when the service is
+removed. `network_name` attaches a service to an existing user-managed network,
+which the agent never deletes. Operators can change the default for every
+service with `AGENT_NETWORK_MODE`, optionally making dedicated networks internal
+via `AGENT_NETWORK_INTERNAL`. Host networking is rejected because it bypasses
+the container network boundary.
+
 ### Data Security
 
 - Secrets encrypted at rest (AES-256)
