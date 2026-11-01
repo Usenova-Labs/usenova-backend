@@ -47,7 +47,7 @@ func parseMemoryBytes(raw string) (int64, error) {
 	// one byte after scaling (e.g. "0.5b"), and against sizes that overflow
 	// int64 (e.g. "9999999999g").
 	scaled := amount * float64(multiplier)
-	if scaled > math.MaxInt64 {
+	if scaled >= math.MaxInt64 {
 		return 0, fmt.Errorf("memory size %q is too large", raw)
 	}
 	bytes := int64(scaled)

@@ -84,7 +84,19 @@ func (m *Manager) resolveNetwork(spec docker.ServiceSpec) (networkPlan, error) {
 	m.mu.RLock()
 	policy := m.networkPolicy
 	m.mu.RUnlock()
+	return resolveNetworkWithPolicy(spec, policy)
+}
 
+// resolveNetworkLocked is resolveNetwork for callers that already hold m.mu
+// (at least for reading). The caller must not release the lock between
+// capturing networkPolicy and calling this function.
+func (m *Manager) resolveNetworkLocked(spec docker.ServiceSpec) (networkPlan, error) {
+	return resolveNetworkWithPolicy(spec, m.networkPolicy)
+}
+
+// resolveNetworkWithPolicy is the lock-free implementation shared by
+// resolveNetwork and resolveNetworkLocked.
+func resolveNetworkWithPolicy(spec docker.ServiceSpec, policy NetworkPolicy) (networkPlan, error) {
 	mode := spec.NetworkMode
 	if strings.TrimSpace(mode) == "" {
 		mode = policy.Mode
@@ -156,6 +168,14 @@ func dedicatedNetworkName(serviceName string) string {
 	return dedicatedNetworkPrefix + serviceName
 }
 
+// isManagedNetworkName reports whether name looks like an agent-generated
+// dedicated network (usenova-<service>). This is used as a secondary signal
+// when the network has not yet been labeled (e.g. it does not exist yet and
+// we are about to create it).
+func isManagedNetworkName(name string) bool {
+	return strings.HasPrefix(name, dedicatedNetworkPrefix)
+}
+
 // managedNetworkLabels mark a network as owned by this agent. They are only
 // applied to networks the agent creates.
 func managedNetworkLabels(serviceName string) map[string]string {
@@ -167,8 +187,17 @@ func managedNetworkLabels(serviceName string) map[string]string {
 }
 
 // ensureNetwork creates the resolved dedicated network before the container is
-// started. If the runtime cannot manage networks we still pass the network name
-// to Docker, which supports pre-existing user-managed networks.
+// started. For agent-managed dedicated networks it also checks whether an
+// existing network's Internal setting matches the plan; a mismatch is
+// rejected so the operator is notified rather than silently connecting the
+// container to the wrong network topology. The check applies to:
+//   - networks that carry the usenova.network label (labeled agent-managed), and
+//   - networks whose name matches the generated usenova-<service> pattern
+//     (unlabeled but clearly agent-created, e.g. created before labels were added).
+//
+// User-supplied explicit network names are left untouched.
+// If the runtime cannot manage networks we still pass the network name to
+// Docker, which supports pre-existing user-managed networks.
 func (m *Manager) ensureNetwork(ctx context.Context, spec docker.ServiceSpec, plan networkPlan) error {
 	if !plan.Create || plan.Name == "" {
 		return nil
@@ -198,11 +227,21 @@ func (m *Manager) removeManagedNetwork(ctx context.Context, spec docker.ServiceS
 	if err != nil || !plan.Managed || plan.Name == "" {
 		return
 	}
+	m.removeNetworkByName(ctx, plan.Name)
+}
+
+// removeNetworkByName removes a single Docker network by name, best-effort.
+// Errors are logged as warnings and never returned so callers can treat
+// network cleanup as non-fatal.
+func (m *Manager) removeNetworkByName(ctx context.Context, name string) {
+	if name == "" {
+		return
+	}
 	nr, ok := m.docker.(NetworkRuntime)
 	if !ok {
 		return
 	}
-	if err := nr.RemoveNetwork(ctx, plan.Name); err != nil {
-		m.log.WithError(err).WithField("network", plan.Name).Warn("Could not remove managed Docker network")
+	if err := nr.RemoveNetwork(ctx, name); err != nil {
+		m.log.WithError(err).WithField("network", name).Warn("Could not remove managed Docker network")
 	}
 }

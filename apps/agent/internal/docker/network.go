@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
@@ -19,9 +20,14 @@ func (c *Client) EnsureNetwork(ctx context.Context, cfg NetworkConfig) error {
 
 	if existing, err := c.cli.NetworkInspect(ctx, cfg.Name, client.NetworkInspectOptions{}); err == nil {
 		// Reuse the existing network only when its Internal setting matches the
-		// request — but apply the check only to agent-managed networks.
-		// User-managed networks (no ownership label) are always accepted as-is.
-		if existing.Network.Labels["usenova.network"] == "true" && existing.Network.Internal != cfg.Internal {
+		// request, but apply the check only to agent-managed networks so
+		// user-managed networks are always accepted as-is. A network is
+		// considered agent-managed when it carries the ownership label OR its
+		// name follows the generated usenova-<service> pattern (networks
+		// created before label support was added).
+		labeled := existing.Network.Labels["usenova.network"] == "true"
+		generatedName := strings.HasPrefix(cfg.Name, "usenova-")
+		if (labeled || generatedName) && existing.Network.Internal != cfg.Internal {
 			return fmt.Errorf("network %s already exists with internal=%v, want internal=%v; remove it first",
 				cfg.Name, existing.Network.Internal, cfg.Internal)
 		}

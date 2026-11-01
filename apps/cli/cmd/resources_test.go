@@ -28,7 +28,7 @@ func TestParseMemoryBytes(t *testing.T) {
 		}
 	}
 
-	for _, in := range []string{"-1m", "not-a-size", "nan", "inf", "-inf", "9999999999999g", "0.5b"} {
+	for _, in := range []string{"-1m", "not-a-size", "nan", "inf", "-inf", "9999999999999g", "8589934592g", "0.5b"} {
 		if _, err := parseMemoryBytes(in); err == nil {
 			t.Errorf("parseMemoryBytes(%q) = nil error, want error", in)
 		}

@@ -86,6 +86,13 @@ type Service struct {
 	// LastError holds the last error observed for this service, if any
 	LastError error
 
+	// prevManagedNetwork is the name of the agent-managed dedicated network
+	// from the previous incarnation of this service. It is set when a
+	// redeploy replaces the service and the new plan uses a different network
+	// name, so the old network can be cleaned up even if the redeploy fails
+	// partway through. RemoveService also removes it.
+	prevManagedNetwork string
+
 	// generation is bumped on every intent change (deploy/stop/remove). Long
 	// running operations capture it and only commit if it is still current,
 	// which fences stop/remove against in-flight deploys.

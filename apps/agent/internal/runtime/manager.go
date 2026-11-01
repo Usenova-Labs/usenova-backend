@@ -356,6 +356,17 @@ func (m *Manager) DeployService(ctx context.Context, spec docker.ServiceSpec) (*
 	} else {
 		svc.generation = 1
 	}
+	// If the previous incarnation had an agent-managed dedicated network and
+	// the new spec resolves to a different network name, retain the old name
+	// so it can be cleaned up regardless of whether the redeploy succeeds or
+	// fails (RemoveService also removes it).
+	if prevSpec != nil {
+		prevPlan, prevErr := m.resolveNetworkLocked(*prevSpec)
+		newPlan, newErr := m.resolveNetworkLocked(spec)
+		if prevErr == nil && newErr == nil && prevPlan.Managed && prevPlan.Name != "" && prevPlan.Name != newPlan.Name {
+			svc.prevManagedNetwork = prevPlan.Name
+		}
+	}
 	m.services[spec.Name] = svc
 	gen := svc.generation
 	m.mu.Unlock()
@@ -368,15 +379,14 @@ func (m *Manager) DeployService(ctx context.Context, spec docker.ServiceSpec) (*
 		return nil, err
 	}
 
-	// After a successful redeploy, remove the previous incarnation's managed
-	// network when its resolved name differs from the new one (e.g. the service
-	// switched from dedicated to bridge, or was renamed).
-	if prevSpec != nil {
-		newPlan, newErr := m.resolveNetwork(spec)
-		prevPlan, prevErr := m.resolveNetwork(*prevSpec)
-		if newErr == nil && prevErr == nil && prevPlan.Managed && prevPlan.Name != "" && prevPlan.Name != newPlan.Name {
-			m.removeManagedNetwork(m.baseCtx(), *prevSpec)
+	// After a successful redeploy, clean up the previous managed network.
+	if svc.prevManagedNetwork != "" {
+		m.removeNetworkByName(m.baseCtx(), svc.prevManagedNetwork)
+		m.mu.Lock()
+		if m.services[spec.Name] == svc {
+			svc.prevManagedNetwork = ""
 		}
+		m.mu.Unlock()
 	}
 
 	deployed, ok := m.snapshot(spec.Name)
@@ -572,6 +582,7 @@ func (m *Manager) RemoveService(ctx context.Context, name string) error {
 	svc.DesiredState = ServiceStateRemoved
 	id := svc.ContainerID
 	spec := svc.Spec
+	prevNet := svc.prevManagedNetwork
 	m.mu.Unlock()
 
 	// Stop health restarts immediately.
@@ -595,6 +606,12 @@ func (m *Manager) RemoveService(ctx context.Context, name string) error {
 	}
 
 	m.removeManagedNetwork(ctx, spec)
+	// Also remove any previous-incarnation managed network that was retained
+	// across a redeploy (e.g. service switched from dedicated to bridge while
+	// the old network was still in use).
+	if prevNet != "" {
+		m.removeNetworkByName(ctx, prevNet)
+	}
 
 	m.mu.Lock()
 	if m.services[name] == svc && svc.generation == gen {
