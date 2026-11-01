@@ -119,13 +119,16 @@ func (m *Manager) resolveNetwork(spec docker.ServiceSpec) (networkPlan, error) {
 			Name:     name,
 			Mode:     normalized,
 			Internal: internal,
-			Create:   true,
+			Create:   managed, // only agent-owned networks are created; explicit names reference existing ones
 			Managed:  managed,
 		}, nil
 
 	default: // bridge / default
 		if name == "" {
 			name = strings.TrimSpace(policy.Name)
+		}
+		if strings.EqualFold(name, "host") {
+			return networkPlan{}, fmt.Errorf("network_name %q is not supported: host networking bypasses container isolation", name)
 		}
 		return networkPlan{Name: name, Mode: normalized}, nil
 	}

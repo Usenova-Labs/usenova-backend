@@ -190,8 +190,18 @@ func (s *ServiceSpec) UnmarshalJSON(data []byte) error {
 	if out.NetworkName == "" {
 		out.NetworkName = legacy.NetworkName
 	}
+	// Apply the legacy NetworkInternal value only when the snake_case
+	// network_internal key is absent from the payload. An explicit
+	// network_internal: false must not be silently overridden by a legacy true.
 	if !out.NetworkInternal {
-		out.NetworkInternal = legacy.NetworkInternal
+		// Detect whether the canonical key was present in the raw payload.
+		var probe struct {
+			NetworkInternal *bool `json:"network_internal"`
+		}
+		if jerr := json.Unmarshal(data, &probe); jerr == nil && probe.NetworkInternal == nil {
+			// Key absent: fall back to legacy value.
+			out.NetworkInternal = legacy.NetworkInternal
+		}
 	}
 	*s = out
 	return nil

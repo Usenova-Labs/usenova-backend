@@ -97,7 +97,11 @@ func deployCmd() *cobra.Command {
 				return fmt.Errorf("--cpus must not be negative")
 			}
 			if cpus > 0 {
-				resources["cpu_limit"] = int64(cpus * 1e9)
+				nanoCPUs := int64(cpus * 1e9)
+				if nanoCPUs <= 0 {
+					return fmt.Errorf("--cpus %v is too small (converts to 0 nano-CPUs); use a value of at least 1e-9", cpus)
+				}
+				resources["cpu_limit"] = nanoCPUs
 			}
 			if cpuShares < 0 {
 				return fmt.Errorf("--cpu-shares must not be negative")

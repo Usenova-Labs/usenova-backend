@@ -105,8 +105,8 @@ or to `none` on hosts where containers must not have network access.
 Verify the applied limits and network with Docker:
 
 ```bash
-docker inspect --format '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.CpuShares}} {{.HostConfig.MemoryReservation}}' my-api
-docker inspect --format '{{.HostConfig.NetworkMode}}' my-api
+docker inspect --format '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.CpuShares}} {{.HostConfig.MemoryReservation}}' usenova-my-api
+docker inspect --format '{{.HostConfig.NetworkMode}}' usenova-my-api
 docker network inspect usenova-my-api
 ```
 

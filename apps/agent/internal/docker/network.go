@@ -17,7 +17,14 @@ func (c *Client) EnsureNetwork(ctx context.Context, cfg NetworkConfig) error {
 		return fmt.Errorf("network name is required")
 	}
 
-	if _, err := c.cli.NetworkInspect(ctx, cfg.Name, client.NetworkInspectOptions{}); err == nil {
+	if existing, err := c.cli.NetworkInspect(ctx, cfg.Name, client.NetworkInspectOptions{}); err == nil {
+		// Reuse the existing network only when its Internal setting matches the
+		// request — but apply the check only to agent-managed networks.
+		// User-managed networks (no ownership label) are always accepted as-is.
+		if existing.Network.Labels["usenova.network"] == "true" && existing.Network.Internal != cfg.Internal {
+			return fmt.Errorf("network %s already exists with internal=%v, want internal=%v; remove it first",
+				cfg.Name, existing.Network.Internal, cfg.Internal)
+		}
 		return nil
 	} else if !errdefs.IsNotFound(err) {
 		return fmt.Errorf("inspect network %s: %w", cfg.Name, err)
@@ -51,11 +58,29 @@ func (c *Client) EnsureNetwork(ctx context.Context, cfg NetworkConfig) error {
 }
 
 // RemoveNetwork removes a Docker network. A network that is already gone is
-// treated as success so cleanup is idempotent.
+// treated as success so cleanup is idempotent. Only networks that carry the
+// agent ownership label (usenova.network=true) are removed; a network without
+// that label is treated as user-managed and left untouched.
 func (c *Client) RemoveNetwork(ctx context.Context, name string) error {
 	if name == "" {
 		return nil
 	}
+
+	info, err := c.cli.NetworkInspect(ctx, name, client.NetworkInspectOptions{})
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			c.log.WithField("network", name).Debug("Docker network already gone; nothing to remove")
+			return nil
+		}
+		return fmt.Errorf("inspect network %s: %w", name, err)
+	}
+
+	// Only remove networks the agent created (identified by the ownership label).
+	if info.Network.Labels["usenova.network"] != "true" {
+		c.log.WithField("network", name).Debug("Docker network is not agent-managed; skipping removal")
+		return nil
+	}
+
 	if _, err := c.cli.NetworkRemove(ctx, name, client.NetworkRemoveOptions{}); err != nil {
 		if errdefs.IsNotFound(err) {
 			c.log.WithField("network", name).Debug("Docker network already gone; nothing to remove")

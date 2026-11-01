@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -36,9 +37,22 @@ func parseMemoryBytes(raw string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid memory size %q", raw)
 	}
+	if math.IsNaN(amount) || math.IsInf(amount, 0) {
+		return 0, fmt.Errorf("invalid memory size %q", raw)
+	}
 	if amount < 0 {
 		return 0, fmt.Errorf("memory size must not be negative: %q", raw)
 	}
-	bytes := int64(amount * float64(multiplier))
+	// Guard against values that are positive but too small to represent even
+	// one byte after scaling (e.g. "0.5b"), and against sizes that overflow
+	// int64 (e.g. "9999999999g").
+	scaled := amount * float64(multiplier)
+	if scaled > math.MaxInt64 {
+		return 0, fmt.Errorf("memory size %q is too large", raw)
+	}
+	bytes := int64(scaled)
+	if amount > 0 && bytes <= 0 {
+		return 0, fmt.Errorf("memory size %q is too small (rounds to 0 bytes)", raw)
+	}
 	return bytes, nil
 }

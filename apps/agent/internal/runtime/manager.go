@@ -330,6 +330,14 @@ func (m *Manager) DeployService(ctx context.Context, spec docker.ServiceSpec) (*
 		existing.cancel()
 	}
 
+	// Capture the previous spec so we can clean up its managed network after a
+	// successful redeploy when the new plan uses a different network name.
+	var prevSpec *docker.ServiceSpec
+	if existing != nil {
+		s := existing.Spec
+		prevSpec = &s
+	}
+
 	base := m.ctx
 	if base == nil {
 		base = context.Background()
@@ -358,6 +366,17 @@ func (m *Manager) DeployService(ctx context.Context, spec docker.ServiceSpec) (*
 		}
 		m.failService(spec.Name, svc, gen, err)
 		return nil, err
+	}
+
+	// After a successful redeploy, remove the previous incarnation's managed
+	// network when its resolved name differs from the new one (e.g. the service
+	// switched from dedicated to bridge, or was renamed).
+	if prevSpec != nil {
+		newPlan, newErr := m.resolveNetwork(spec)
+		prevPlan, prevErr := m.resolveNetwork(*prevSpec)
+		if newErr == nil && prevErr == nil && prevPlan.Managed && prevPlan.Name != "" && prevPlan.Name != newPlan.Name {
+			m.removeManagedNetwork(m.baseCtx(), *prevSpec)
+		}
 	}
 
 	deployed, ok := m.snapshot(spec.Name)

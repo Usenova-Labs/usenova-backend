@@ -323,6 +323,12 @@ func TestLoadNetworkPolicyDefaults(t *testing.T) {
 	t.Setenv("AGENT_NETWORK_MODE", "")
 	t.Setenv("AGENT_NETWORK_NAME", "")
 	t.Setenv("AGENT_NETWORK_INTERNAL", "")
+	// Clear legacy aliases so an inherited environment cannot override the
+	// blank canonical variables and cause bridge-vs-none mismatches.
+	t.Setenv("DOCKER_NETWORK_MODE", "")
+	t.Setenv("DOCKER_NETWORK_NAME", "")
+	t.Setenv("DOCKER_NETWORK_INTERNAL", "")
+	t.Setenv("NETWORK_MODE", "")
 
 	cfg, err := Load("test-version")
 	if err != nil {

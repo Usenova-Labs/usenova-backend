@@ -107,11 +107,10 @@ func TestDeployExplicitNetworkIsNeverRemoved(t *testing.T) {
 	if _, err := m.DeployService(context.Background(), spec); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	if len(fake.ensuredNetworks) != 1 || fake.ensuredNetworks[0].Name != "shared-net" {
-		t.Fatalf("ensured networks = %v, want shared-net", fake.ensuredNetworks)
-	}
-	if fake.ensuredNetworks[0].Labels != nil {
-		t.Errorf("explicit network labels = %v, want nil (not agent-owned)", fake.ensuredNetworks[0].Labels)
+	// A user-supplied network_name with dedicated mode is not agent-managed:
+	// EnsureNetwork must NOT be called — the network must already exist.
+	if len(fake.ensuredNetworks) != 0 {
+		t.Fatalf("ensured networks = %v, want none (user-managed network must not be created)", fake.ensuredNetworks)
 	}
 	if fake.runConfigs[0].Network != "shared-net" {
 		t.Errorf("container network = %q, want shared-net", fake.runConfigs[0].Network)
