@@ -223,3 +223,61 @@ func TestServiceSpecJSONDecodesRestartLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestServiceSpecJSONDecodesNetworkConfig(t *testing.T) {
+	payload := `{
+		"name": "web",
+		"image": "nginx",
+		"network_mode": "dedicated",
+		"network_name": "custom-net",
+		"network_internal": true
+	}`
+
+	var spec ServiceSpec
+	if err := json.Unmarshal([]byte(payload), &spec); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if spec.NetworkMode != "dedicated" {
+		t.Errorf("NetworkMode = %q, want dedicated", spec.NetworkMode)
+	}
+	if spec.NetworkName != "custom-net" {
+		t.Errorf("NetworkName = %q, want custom-net", spec.NetworkName)
+	}
+	if !spec.NetworkInternal {
+		t.Error("NetworkInternal = false, want true")
+	}
+
+	b, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	for _, key := range []string{"network_mode", "network_name", "network_internal"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("marshaled spec missing key %q: %s", key, b)
+		}
+	}
+}
+
+func TestServiceSpecJSONDecodesLegacyNetworkConfig(t *testing.T) {
+	legacy := `{
+		"Name": "web",
+		"Image": "nginx",
+		"NetworkMode": "none",
+		"NetworkName": "legacy-net",
+		"Network": "alias-net",
+		"NetworkInternal": true
+	}`
+
+	var spec ServiceSpec
+	if err := json.Unmarshal([]byte(legacy), &spec); err != nil {
+		t.Fatalf("unmarshal legacy network spec: %v", err)
+	}
+	if spec.NetworkMode != "none" || spec.NetworkName != "legacy-net" ||
+		spec.Network != "alias-net" || !spec.NetworkInternal {
+		t.Errorf("legacy network fields = %+v, want none/legacy-net/alias-net/true", spec)
+	}
+}

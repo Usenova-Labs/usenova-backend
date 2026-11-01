@@ -57,6 +57,13 @@ func New(cfg *config.Config, log *logrus.Logger) *Agent {
 			Backoff:     cfg.RestartBackoff,
 			MaxBackoff:  runtime.DefaultRestartMaxBackoff,
 		})
+		// Network policy: default to Docker's shared bridge unless the agent
+		// is configured for isolation.
+		runtimeMgr.SetNetworkPolicy(runtime.NetworkPolicy{
+			Mode:     cfg.NetworkMode,
+			Name:     cfg.NetworkName,
+			Internal: cfg.NetworkInternal,
+		})
 	}
 
 	// Feed real capability + service count into heartbeats/registration.

@@ -364,7 +364,7 @@ channel.
 | A stolen agent session token is used to impersonate another agent | The token is bound to one agent ID and checked against the agent named in the path |
 | Command tampering in transit | TLS is required for the CP hop. The agent refusing plaintext for a non-loopback CP is a follow-up |
 | Command replay | Command IDs are unique, a command is leased to one agent at a time and its terminal state is recorded; a re-delivered command keeps its ID, so a duplicate execution is visible |
-| A compromised CP asks for a dangerous container | **Known gap.** The agent currently trusts the payload it receives. Follow-up: an agent-side policy allowlist (no privileged mode, no host mounts, no host network) — see [Follow-ups](#follow-ups) |
+| A compromised CP asks for a dangerous container | **Known gap.** The agent currently trusts the payload it receives. Host networking is rejected, but privileged mode and host mounts are not yet blocked. Follow-up: a full agent-side policy allowlist — see [Follow-ups](#follow-ups) |
 | A hostile or buggy operator floods the queue | The queue depth per agent is capped and commands can expire |
 | An agent executes commands for another agent | The CP routes by agent ID and validates the token; the agent only ever polls its own path |
 | A remote attacker reaches the agent's deployment ingress | The local API is unchanged: loopback bind enforced at startup, bearer token on every request. The command channel never proxies to it |
@@ -390,9 +390,24 @@ The payload is opaque JSON to the CP; the agent owns the schema.
   "ports": { "8080": "80" },
   "env": ["KEY=value"],
   "restart_policy": "unless-stopped",
-  "health_check": { "type": "http", "path": "/health", "port": 80 }
+  "health_check": { "type": "http", "path": "/health", "port": 80 },
+  "resources": {
+    "cpu_limit": 1500000000,
+    "memory_limit": 536870912,
+    "cpu_reserve": 512,
+    "memory_reserve": 268435456
+  },
+  "network_mode": "dedicated"
 }
 ```
+
+`resources` is optional; zero values keep Docker's unlimited defaults. Network
+modes are `default`/`bridge`, `none`, and `dedicated`/`per-service` (an
+agent-owned `usenova-<service>` network). `network_name` attaches to an existing
+network and takes precedence; explicit networks are never deleted by the agent.
+The agent-wide default is configured with `AGENT_NETWORK_MODE`. See
+[apps/agent/README.md](../apps/agent/README.md#resource-limits-and-network-isolation)
+for the `docker inspect` verification commands.
 
 `stop` and `remove` payload:
 
@@ -407,7 +422,8 @@ than on the host.
 ## Follow-ups
 
 - Agent-side policy allowlist for payloads (no privileged containers, no host
-  mounts/network), enforced independently of the CP.
+  mounts), enforced independently of the CP. Host networking is already
+  rejected by the agent network policy.
 - Long-polling (`?wait=30`) to cut deploy latency, then a persistent stream
   when the CP runs multiple instances.
 - Per-user authentication for the control plane API, replacing the single

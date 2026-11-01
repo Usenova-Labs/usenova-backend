@@ -25,8 +25,20 @@ type ContainerConfig struct {
 	OpenStdin     bool
 	ExtraHosts    []string
 	// Resource constraints (0 = unlimited)
-	NanoCPUs int64 // billionths of a CPU
-	Memory   int64 // bytes
+	NanoCPUs          int64 // hard CPU limit in billionths of a CPU
+	Memory            int64 // hard memory limit in bytes
+	CPUShares         int64 // relative CPU weight (Docker CpuShares)
+	MemoryReservation int64 // soft memory limit in bytes
+}
+
+// NetworkConfig describes a Docker network the agent may create for a
+// deployment. Name is required. Driver defaults to "bridge"; Internal disables
+// external connectivity.
+type NetworkConfig struct {
+	Name     string
+	Driver   string
+	Internal bool
+	Labels   map[string]string
 }
 
 // ContainerInfo holds runtime information about a container
@@ -91,6 +103,23 @@ type ServiceSpec struct {
 	Labels        map[string]string `json:"labels,omitempty"`
 	DependsOn     []string          `json:"depends_on,omitempty"`
 
+	// NetworkMode selects the Docker network policy for this deployment.
+	// Empty inherits the agent default. Supported values:
+	//   "default"/"bridge" - Docker's shared default bridge (backward compatible)
+	//   "none"             - no network stack
+	//   "dedicated"/"per-service" - a dedicated network for this service
+	// Any other value is rejected at deploy time.
+	NetworkMode string `json:"network_mode,omitempty"`
+	// NetworkName attaches the container to an existing Docker network. It
+	// takes precedence over the bridge/default mode and is never deleted by
+	// the agent. With "dedicated" it overrides the generated network name.
+	NetworkName string `json:"network_name,omitempty"`
+	// Network is a compatibility alias for NetworkName.
+	Network string `json:"network,omitempty"`
+	// NetworkInternal creates a dedicated network without external
+	// connectivity. It only applies when the agent creates the network.
+	NetworkInternal bool `json:"network_internal,omitempty"`
+
 	// MaxRestarts caps how many times the agent restarts this service
 	// inside RestartWindowSeconds. Zero inherits the agent-wide limit, a
 	// negative value disables the limit entirely.
@@ -106,11 +135,18 @@ type ServiceSpec struct {
 	RestartBackoffSeconds int `json:"restart_backoff_seconds,omitempty"`
 }
 
-// ResourceLimits defines resource constraints
+// ResourceLimits defines resource constraints.
+//
+// CPULimit is expressed in nano-CPUs (1e9 = one full CPU), matching Docker's
+// HostConfig.NanoCpus. CPUReserve is Docker's relative CPU weight (CpuShares,
+// 1024 is the daemon default). MemoryLimit and MemoryReserve are expressed in
+// bytes; MemoryReserve is Docker's soft (reservation) limit. A zero value
+// leaves the corresponding Docker field unset, which preserves the previous
+// unlimited behavior.
 type ResourceLimits struct {
-	CPULimit      int64 `json:"cpu_limit,omitempty"`    // in CPU shares
-	MemoryLimit   int64 `json:"memory_limit,omitempty"` // in bytes
-	CPUReserve    int64 `json:"cpu_reserve,omitempty"`
+	CPULimit      int64 `json:"cpu_limit,omitempty"`    // hard CPU limit in nano-CPUs
+	MemoryLimit   int64 `json:"memory_limit,omitempty"` // hard memory limit in bytes
+	CPUReserve    int64 `json:"cpu_reserve,omitempty"`  // relative CPU shares
 	MemoryReserve int64 `json:"memory_reserve,omitempty"`
 }
 
@@ -128,9 +164,12 @@ func (s *ServiceSpec) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var legacy struct {
-		HealthCheck   *HealthConfig
-		RestartPolicy string
-		DependsOn     []string
+		HealthCheck     *HealthConfig
+		RestartPolicy   string
+		DependsOn       []string
+		NetworkMode     string
+		NetworkName     string
+		NetworkInternal bool
 	}
 	if err := json.Unmarshal(data, &legacy); err != nil {
 		return err
@@ -144,6 +183,25 @@ func (s *ServiceSpec) UnmarshalJSON(data []byte) error {
 	}
 	if len(out.DependsOn) == 0 {
 		out.DependsOn = legacy.DependsOn
+	}
+	if out.NetworkMode == "" {
+		out.NetworkMode = legacy.NetworkMode
+	}
+	if out.NetworkName == "" {
+		out.NetworkName = legacy.NetworkName
+	}
+	// Apply the legacy NetworkInternal value only when the snake_case
+	// network_internal key is absent from the payload. An explicit
+	// network_internal: false must not be silently overridden by a legacy true.
+	if !out.NetworkInternal {
+		// Detect whether the canonical key was present in the raw payload.
+		var probe struct {
+			NetworkInternal *bool `json:"network_internal"`
+		}
+		if jerr := json.Unmarshal(data, &probe); jerr == nil && probe.NetworkInternal == nil {
+			// Key absent: fall back to legacy value.
+			out.NetworkInternal = legacy.NetworkInternal
+		}
 	}
 	*s = out
 	return nil

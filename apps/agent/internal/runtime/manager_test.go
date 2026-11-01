@@ -30,12 +30,15 @@ type fakeRuntime struct {
 	mu        sync.Mutex
 	available bool
 
-	pulled     []string
-	runConfigs []docker.ContainerConfig
-	restarted  []string
-	started    []string
-	stopped    []string
-	removed    []string
+	pulled          []string
+	runConfigs      []docker.ContainerConfig
+	restarted       []string
+	started         []string
+	stopped         []string
+	removed         []string
+	ensuredNetworks []docker.NetworkConfig
+	removedNetworks []string
+	networkErr      error
 
 	inspect map[string]container.InspectResponse
 	nextID  int
@@ -116,6 +119,26 @@ func (f *fakeRuntime) InspectContainer(ctx context.Context, containerID string) 
 
 func (f *fakeRuntime) ListContainers(ctx context.Context, all bool, filter client.Filters) ([]container.Summary, error) {
 	return nil, nil
+}
+
+func (f *fakeRuntime) EnsureNetwork(ctx context.Context, cfg docker.NetworkConfig) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.networkErr != nil {
+		return f.networkErr
+	}
+	f.ensuredNetworks = append(f.ensuredNetworks, cfg)
+	return nil
+}
+
+func (f *fakeRuntime) RemoveNetwork(ctx context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.networkErr != nil {
+		return f.networkErr
+	}
+	f.removedNetworks = append(f.removedNetworks, name)
+	return nil
 }
 
 // restartCount returns how many containers were restarted. It locks because

@@ -112,6 +112,10 @@ type Manager struct {
 	// that do not override them in their spec.
 	restartPolicy RestartPolicy
 
+	// networkPolicy is the agent-wide default for services that do not set
+	// network_mode/network_name in their spec.
+	networkPolicy NetworkPolicy
+
 	// stopCh is closed when the manager stops. Deferred restarts waiting out
 	// a backoff abandon their wait instead of touching Docker after shutdown.
 	stopCh   chan struct{}
@@ -141,6 +145,7 @@ func NewManager(dc ContainerRuntime, log *logrus.Logger) *Manager {
 		opLocks:        make(map[string]*sync.Mutex),
 		reconcileEvery: defaultReconcileInterval,
 		restartPolicy:  DefaultRestartPolicy(),
+		networkPolicy:  DefaultNetworkPolicy(),
 		stopCh:         make(chan struct{}),
 	}
 
@@ -325,6 +330,14 @@ func (m *Manager) DeployService(ctx context.Context, spec docker.ServiceSpec) (*
 		existing.cancel()
 	}
 
+	// Capture the previous spec so we can clean up its managed network after a
+	// successful redeploy when the new plan uses a different network name.
+	var prevSpec *docker.ServiceSpec
+	if existing != nil {
+		s := existing.Spec
+		prevSpec = &s
+	}
+
 	base := m.ctx
 	if base == nil {
 		base = context.Background()
@@ -343,6 +356,17 @@ func (m *Manager) DeployService(ctx context.Context, spec docker.ServiceSpec) (*
 	} else {
 		svc.generation = 1
 	}
+	// If the previous incarnation had an agent-managed dedicated network and
+	// the new spec resolves to a different network name, retain the old name
+	// so it can be cleaned up regardless of whether the redeploy succeeds or
+	// fails (RemoveService also removes it).
+	if prevSpec != nil {
+		prevPlan, prevErr := m.resolveNetworkLocked(*prevSpec)
+		newPlan, newErr := m.resolveNetworkLocked(spec)
+		if prevErr == nil && newErr == nil && prevPlan.Managed && prevPlan.Name != "" && prevPlan.Name != newPlan.Name {
+			svc.prevManagedNetwork = prevPlan.Name
+		}
+	}
 	m.services[spec.Name] = svc
 	gen := svc.generation
 	m.mu.Unlock()
@@ -353,6 +377,16 @@ func (m *Manager) DeployService(ctx context.Context, spec docker.ServiceSpec) (*
 		}
 		m.failService(spec.Name, svc, gen, err)
 		return nil, err
+	}
+
+	// After a successful redeploy, clean up the previous managed network.
+	if svc.prevManagedNetwork != "" {
+		m.removeNetworkByName(m.baseCtx(), svc.prevManagedNetwork)
+		m.mu.Lock()
+		if m.services[spec.Name] == svc {
+			svc.prevManagedNetwork = ""
+		}
+		m.mu.Unlock()
 	}
 
 	deployed, ok := m.snapshot(spec.Name)
@@ -406,7 +440,32 @@ func (m *Manager) provision(ctx context.Context, svc *Service, gen uint64) error
 		}
 	}
 
-	id, err := m.docker.RunContainer(ctx, buildContainerConfig(spec))
+	plan, err := m.resolveNetwork(spec)
+	if err != nil {
+		if !m.current(spec.Name, svc, gen) || ctx.Err() != nil {
+			return errSuperseded
+		}
+		return err
+	}
+	if err := m.ensureNetwork(ctx, spec, plan); err != nil {
+		if !m.current(spec.Name, svc, gen) || ctx.Err() != nil {
+			return errSuperseded
+		}
+		return err
+	}
+
+	// Pass the resolved network to the container builder. An empty name keeps
+	// Docker's default bridge for specs that never configured networking.
+	runSpec := spec
+	runSpec.NetworkName = plan.Name
+	runSpec.Network = ""
+	if plan.Mode == NetworkModeNone {
+		runSpec.NetworkMode = NetworkModeNone
+	} else {
+		runSpec.NetworkMode = plan.Mode
+	}
+
+	id, err := m.docker.RunContainer(ctx, buildContainerConfig(runSpec))
 	if err != nil {
 		if !m.current(spec.Name, svc, gen) || ctx.Err() != nil {
 			return errSuperseded
@@ -522,6 +581,8 @@ func (m *Manager) RemoveService(ctx context.Context, name string) error {
 	gen := svc.generation
 	svc.DesiredState = ServiceStateRemoved
 	id := svc.ContainerID
+	spec := svc.Spec
+	prevNet := svc.prevManagedNetwork
 	m.mu.Unlock()
 
 	// Stop health restarts immediately.
@@ -542,6 +603,14 @@ func (m *Manager) RemoveService(ctx context.Context, name string) error {
 			m.mu.Unlock()
 			return fmt.Errorf("remove service %s container: %w", name, err)
 		}
+	}
+
+	m.removeManagedNetwork(ctx, spec)
+	// Also remove any previous-incarnation managed network that was retained
+	// across a redeploy (e.g. service switched from dedicated to bridge while
+	// the old network was still in use).
+	if prevNet != "" {
+		m.removeNetworkByName(ctx, prevNet)
 	}
 
 	m.mu.Lock()
@@ -1359,11 +1428,28 @@ func specFromInspect(name string, info *container.InspectResponse, metaRaw strin
 	if info.HostConfig != nil {
 		spec.RestartPolicy = string(info.HostConfig.RestartPolicy.Name)
 		spec.Volumes = append([]string(nil), info.HostConfig.Binds...)
-		if info.HostConfig.NanoCPUs > 0 || info.HostConfig.Memory > 0 {
+		if info.HostConfig.NanoCPUs > 0 || info.HostConfig.Memory > 0 ||
+			info.HostConfig.CPUShares > 0 || info.HostConfig.MemoryReservation > 0 {
 			spec.Resources = &docker.ResourceLimits{
-				CPULimit:    info.HostConfig.NanoCPUs,
-				MemoryLimit: info.HostConfig.Memory,
+				CPULimit:      info.HostConfig.NanoCPUs,
+				MemoryLimit:   info.HostConfig.Memory,
+				CPUReserve:    info.HostConfig.CPUShares,
+				MemoryReserve: info.HostConfig.MemoryReservation,
 			}
+		}
+
+		// Preserve the network policy so adoption does not silently move a
+		// container back to the default bridge on the next redeploy.
+		networkMode := string(info.HostConfig.NetworkMode)
+		switch {
+		case networkMode == "" || networkMode == "default" || networkMode == "bridge":
+			// Backward-compatible default.
+		case networkMode == NetworkModeNone:
+			spec.NetworkMode = NetworkModeNone
+		case networkMode == dedicatedNetworkName(name):
+			spec.NetworkMode = NetworkModeDedicated
+		default:
+			spec.NetworkName = networkMode
 		}
 		if len(info.HostConfig.PortBindings) > 0 {
 			spec.Ports = make(map[string]string, len(info.HostConfig.PortBindings))
@@ -1410,18 +1496,31 @@ func buildContainerConfig(spec docker.ServiceSpec) docker.ContainerConfig {
 		policy = RestartPolicyOnFailure
 	}
 
+	network := spec.NetworkName
+	if network == "" {
+		network = spec.Network
+	}
+	if spec.NetworkMode == NetworkModeNone {
+		network = NetworkModeNone
+	} else if spec.NetworkMode == NetworkModeDedicated && network == "" {
+		network = dedicatedNetworkName(spec.Name)
+	}
+
 	cfg := docker.ContainerConfig{
 		Image:         spec.Image,
 		Name:          containerName(spec.Name),
 		Env:           spec.Env,
 		Ports:         spec.Ports,
 		Volumes:       spec.Volumes,
+		Network:       network,
 		RestartPolicy: policy,
 		Labels:        managedLabels(spec),
 	}
 	if spec.Resources != nil {
 		cfg.NanoCPUs = spec.Resources.CPULimit
 		cfg.Memory = spec.Resources.MemoryLimit
+		cfg.CPUShares = spec.Resources.CPUReserve
+		cfg.MemoryReservation = spec.Resources.MemoryReserve
 	}
 	return cfg
 }

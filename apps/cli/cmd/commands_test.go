@@ -103,6 +103,9 @@ func TestFormatRestarts(t *testing.T) {
 				t.Errorf("formatRestarts() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
 func TestParseDeployTarget(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -233,5 +236,68 @@ func TestDeployRemoteUnreachable(t *testing.T) {
 	_, err := runDeployAtURL(t, url, "remote")
 	if err == nil || !strings.Contains(err.Error(), "could not reach control plane") {
 		t.Fatalf("error = %v, want unreachable error", err)
+	}
+}
+
+func TestDeployRemoteIncludesResourcesAndNetwork(t *testing.T) {
+	var got controlplane.CreateDeploymentRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":           "dep-1",
+			"agent_id":     "platform-1",
+			"service_name": "web",
+			"image":        "nginx:alpine",
+			"state":        "pending",
+			"command_id":   "cmd-1",
+		})
+	}))
+	defer srv.Close()
+
+	oldCP, oldOut, oldToken := controlPlaneURL, output, apiToken
+	controlPlaneURL, output, apiToken = srv.URL, "text", "operator-token"
+	t.Cleanup(func() {
+		controlPlaneURL, output, apiToken = oldCP, oldOut, oldToken
+	})
+
+	c := deployCmd()
+	c.SilenceUsage = true
+	c.SilenceErrors = true
+	c.SetArgs([]string{
+		"--name", "web",
+		"--image", "nginx:alpine",
+		"--target", "remote",
+		"--cpus", "1.5",
+		"--cpu-shares", "512",
+		"--memory", "512m",
+		"--memory-reservation", "256m",
+		"--network-mode", "dedicated",
+		"--network-internal",
+	})
+	if _, err := captureStdout(t, func() error { return c.Execute() }); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+
+	resources, ok := got.Service["resources"].(map[string]any)
+	if !ok {
+		t.Fatalf("resources = %#v, want object", got.Service["resources"])
+	}
+	if resources["cpu_limit"] != float64(1500000000) {
+		t.Errorf("cpu_limit = %v, want 1500000000", resources["cpu_limit"])
+	}
+	if resources["memory_limit"] != float64(512<<20) {
+		t.Errorf("memory_limit = %v, want %d", resources["memory_limit"], 512<<20)
+	}
+	if resources["cpu_reserve"] != float64(512) {
+		t.Errorf("cpu_reserve = %v, want 512", resources["cpu_reserve"])
+	}
+	if resources["memory_reserve"] != float64(256<<20) {
+		t.Errorf("memory_reserve = %v, want %d", resources["memory_reserve"], 256<<20)
+	}
+	if got.Service["network_mode"] != "dedicated" || got.Service["network_internal"] != true {
+		t.Errorf("network fields = %v/%v, want dedicated/true", got.Service["network_mode"], got.Service["network_internal"])
 	}
 }

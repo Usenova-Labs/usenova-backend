@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -314,4 +315,73 @@ func TestLoadRestartPolicy(t *testing.T) {
 			t.Error("Expected error for a non-positive RESTART_WINDOW")
 		}
 	})
+}
+
+func TestLoadNetworkPolicyDefaults(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+	t.Setenv("AGENT_TOKEN", "test-token")
+	t.Setenv("AGENT_NETWORK_MODE", "")
+	t.Setenv("AGENT_NETWORK_NAME", "")
+	t.Setenv("AGENT_NETWORK_INTERNAL", "")
+	// Clear legacy aliases so an inherited environment cannot override the
+	// blank canonical variables and cause bridge-vs-none mismatches.
+	t.Setenv("DOCKER_NETWORK_MODE", "")
+	t.Setenv("DOCKER_NETWORK_NAME", "")
+	t.Setenv("DOCKER_NETWORK_INTERNAL", "")
+	t.Setenv("NETWORK_MODE", "")
+
+	cfg, err := Load("test-version")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.NetworkMode != "bridge" {
+		t.Errorf("NetworkMode = %q, want bridge (backward-compatible default)", cfg.NetworkMode)
+	}
+	if cfg.NetworkName != "" || cfg.NetworkInternal {
+		t.Errorf("network defaults = %q/%v, want empty/false", cfg.NetworkName, cfg.NetworkInternal)
+	}
+}
+
+func TestLoadNetworkPolicy(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+	t.Setenv("AGENT_TOKEN", "test-token")
+	t.Setenv("AGENT_NETWORK_MODE", "per-service")
+	t.Setenv("AGENT_NETWORK_NAME", "usenova-shared")
+	t.Setenv("AGENT_NETWORK_INTERNAL", "true")
+
+	cfg, err := Load("test-version")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.NetworkMode != "per-service" {
+		t.Errorf("NetworkMode = %q, want per-service", cfg.NetworkMode)
+	}
+	if cfg.NetworkName != "usenova-shared" {
+		t.Errorf("NetworkName = %q, want usenova-shared", cfg.NetworkName)
+	}
+	if !cfg.NetworkInternal {
+		t.Error("NetworkInternal = false, want true")
+	}
+}
+
+func TestLoadRejectsUnsupportedNetworkPolicy(t *testing.T) {
+	for _, mode := range []string{"host", "overlay"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+			t.Setenv("AGENT_TOKEN", "test-token")
+			t.Setenv("AGENT_NETWORK_MODE", mode)
+			if _, err := Load("test-version"); err == nil || !strings.Contains(err.Error(), "AGENT_NETWORK_MODE") {
+				t.Fatalf("Load error = %v, want AGENT_NETWORK_MODE error", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidNetworkInternal(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+	t.Setenv("AGENT_TOKEN", "test-token")
+	t.Setenv("AGENT_NETWORK_INTERNAL", "yes-please")
+	if _, err := Load("test-version"); err == nil || !strings.Contains(err.Error(), "AGENT_NETWORK_INTERNAL") {
+		t.Fatalf("Load error = %v, want AGENT_NETWORK_INTERNAL error", err)
+	}
 }
