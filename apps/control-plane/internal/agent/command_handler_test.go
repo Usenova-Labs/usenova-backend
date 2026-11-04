@@ -346,6 +346,72 @@ func TestListCommands(t *testing.T) {
 	}
 }
 
+func TestListCommands_UnknownAgent(t *testing.T) {
+	r, _, _ := testCommandRouter(t)
+
+	rec := doJSON(t, r, http.MethodGet, "/api/v1/agents/ghost/commands", testOperatorToken, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown agent, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCompleteCommand_CrossAgentRejected verifies that agent-b cannot complete
+// a command that was queued for agent-a, even when agent-b presents its own
+// valid session token.
+func TestCompleteCommand_CrossAgentRejected(t *testing.T) {
+	r, store, _ := testCommandRouter(t)
+	_ = registerTestAgent(t, store, "agent-a")
+	tokenB := registerTestAgent(t, store, "agent-b")
+
+	// Enqueue a command for agent-a.
+	rec := doJSON(t, r, http.MethodPost, "/api/v1/agents/agent-a/commands", testOperatorToken, EnqueueCommandRequest{
+		Type:    CommandTypeDeploy,
+		Payload: json.RawMessage(`{"name":"api","image":"nginx"}`),
+	})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("enqueue: expected 202, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	var record CommandRecord
+	if err := json.Unmarshal(rec.Body.Bytes(), &record); err != nil {
+		t.Fatalf("decode record: %v", err)
+	}
+
+	// agent-b attempts to complete agent-a's command using its own valid token
+	// but with agent-a's path. RequireAgentSession validates that the token
+	// belongs to the agent ID in the path, so this must be rejected.
+	rec = doJSON(t, r, http.MethodPost,
+		"/api/v1/agents/agent-a/commands/"+record.Command.ID+"/result",
+		tokenB,
+		CommandResult{Status: CommandStatusSucceeded})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("cross-agent complete: expected 401, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestClaimCommand_CrossAgentRejected verifies that agent-b cannot claim
+// commands queued for agent-a, even when agent-b presents its own valid token.
+func TestClaimCommand_CrossAgentRejected(t *testing.T) {
+	r, store, _ := testCommandRouter(t)
+	_ = registerTestAgent(t, store, "agent-a")
+	tokenB := registerTestAgent(t, store, "agent-b")
+
+	// Enqueue a command for agent-a.
+	rec := doJSON(t, r, http.MethodPost, "/api/v1/agents/agent-a/commands", testOperatorToken, EnqueueCommandRequest{
+		Type:    CommandTypeStop,
+		Payload: json.RawMessage(`{"name":"api"}`),
+	})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("enqueue: expected 202, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// agent-b uses its own valid token but targets agent-a's command path.
+	rec = doJSON(t, r, http.MethodGet, "/api/v1/agents/agent-a/commands/next", tokenB, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("cross-agent claim: expected 401, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
 func TestSessionTokenFromHeader(t *testing.T) {
 	cases := []struct {
 		header string

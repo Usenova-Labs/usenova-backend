@@ -86,21 +86,27 @@ func requireOperatorToken(operatorToken string, logger *logrus.Logger) gin.Handl
 }
 
 // RequireAgentSession rejects requests that do not carry the session token of
-// the agent named in the path.
+// the agent named in the path. On success it stores the authenticated agent ID
+// under sessionTokenContextKey so handlers can retrieve it from context instead
+// of re-reading the (unauthenticated) path parameter.
 func (h *CommandHandler) RequireAgentSession() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		err := authorizeAgentSession(h.store, c.Param("agentID"), c.GetHeader("Authorization"))
+		agentID := c.Param("agentID")
+		err := authorizeAgentSession(h.store, agentID, c.GetHeader("Authorization"))
 		switch {
 		case err == nil:
+			// Store the verified identity so downstream handlers never have
+			// to trust the path parameter directly.
+			c.Set(sessionTokenContextKey, agentID)
 			c.Next()
 			return
 		case errors.Is(err, ErrAgentNotFound):
-			h.logger.WithField("agent_id", c.Param("agentID")).Warn("Unknown agent requested a command")
+			h.logger.WithField("agent_id", agentID).Warn("Unknown agent requested a command")
 			c.AbortWithStatusJSON(http.StatusNotFound, ErrorResponse{
 				Error: "Agent not found",
 			})
 		default:
-			h.logger.WithField("agent_id", c.Param("agentID")).Warn("Rejected command channel request")
+			h.logger.WithField("agent_id", agentID).Warn("Rejected command channel request")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
 				Error: "Unauthorized",
 			})
@@ -204,6 +210,21 @@ func (h *CommandHandler) EnqueueCommand(c *gin.Context) {
 func (h *CommandHandler) ListCommands(c *gin.Context) {
 	agentID := c.Param("agentID")
 
+	// Verify the agent exists so operators cannot silently probe arbitrary IDs.
+	if _, err := h.store.GetAgent(agentID); err != nil {
+		if errors.Is(err, ErrAgentNotFound) {
+			c.JSON(http.StatusNotFound, ErrorResponse{
+				Error: "Agent not found",
+			})
+			return
+		}
+		h.logger.WithError(err).Error("Failed to look up agent for ListCommands")
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "Internal server error",
+		})
+		return
+	}
+
 	records := h.queue.List(agentID)
 	c.JSON(http.StatusOK, CommandListResponse{
 		Commands: records,
@@ -239,9 +260,21 @@ func (h *CommandHandler) GetCommand(c *gin.Context) {
 // It hands the oldest pending command to the agent and answers 204 when
 // there is nothing to do.
 func (h *CommandHandler) ClaimCommand(c *gin.Context) {
-	agentID := c.Param("agentID")
+	// Use the agent ID that was verified and stored by RequireAgentSession,
+	// not the raw path parameter. This makes the ownership enforcement
+	// explicit and resistant to any future routing changes.
+	agentID, _ := c.Get(sessionTokenContextKey)
+	verifiedAgentID, ok := agentID.(string)
+	if !ok || verifiedAgentID == "" {
+		// Should never happen: RequireAgentSession must run before this handler.
+		h.logger.Error("ClaimCommand reached without authenticated agent identity in context")
+		c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error: "Unauthorized",
+		})
+		return
+	}
 
-	record, err := h.queue.Next(agentID)
+	record, err := h.queue.Next(verifiedAgentID)
 	if err != nil {
 		if errors.Is(err, ErrNoPendingCommand) {
 			c.Status(http.StatusNoContent)
@@ -255,7 +288,7 @@ func (h *CommandHandler) ClaimCommand(c *gin.Context) {
 	}
 
 	h.logger.WithFields(logrus.Fields{
-		"agent_id":   agentID,
+		"agent_id":   verifiedAgentID,
 		"command_id": record.Command.ID,
 		"type":       record.Command.Type,
 	}).Info("Command claimed")
@@ -270,7 +303,20 @@ func (h *CommandHandler) ClaimCommand(c *gin.Context) {
 // It records the outcome of a command. Reporting the same command twice is
 // not an error: the first result wins.
 func (h *CommandHandler) CompleteCommand(c *gin.Context) {
-	agentID := c.Param("agentID")
+	// Use the agent ID that was verified and stored by RequireAgentSession,
+	// not the raw path parameter. An agent can only complete commands that
+	// belong to itself.
+	agentID, _ := c.Get(sessionTokenContextKey)
+	verifiedAgentID, ok := agentID.(string)
+	if !ok || verifiedAgentID == "" {
+		// Should never happen: RequireAgentSession must run before this handler.
+		h.logger.Error("CompleteCommand reached without authenticated agent identity in context")
+		c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error: "Unauthorized",
+		})
+		return
+	}
+
 	commandID := c.Param("commandID")
 
 	var result CommandResult
@@ -296,7 +342,7 @@ func (h *CommandHandler) CompleteCommand(c *gin.Context) {
 		result.CompletedAt = time.Now().UTC()
 	}
 
-	record, err := h.queue.Complete(agentID, commandID, result)
+	record, err := h.queue.Complete(verifiedAgentID, commandID, result)
 	if err != nil {
 		if errors.Is(err, ErrCommandNotFound) {
 			c.JSON(http.StatusNotFound, ErrorResponse{
@@ -312,7 +358,7 @@ func (h *CommandHandler) CompleteCommand(c *gin.Context) {
 	}
 
 	h.logger.WithFields(logrus.Fields{
-		"agent_id":   agentID,
+		"agent_id":   verifiedAgentID,
 		"command_id": commandID,
 		"status":     record.Status,
 	}).Info("Command completed")
