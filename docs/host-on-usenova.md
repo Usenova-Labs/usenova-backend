@@ -162,3 +162,8 @@ path to enabling the fleet direction.
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for how to pick up an issue, and
 [GitHub Issues](https://github.com/Usenova-Labs/usenova-backend/issues) for
 the current work queue.
+
+Open billing design questions for the Host-on-Usenova path are tracked in
+[**docs/billing-open-questions.md**](billing-open-questions.md). No billing
+code will be written until P0/P1 items are complete and each question there
+has a recorded decision.
