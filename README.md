@@ -12,7 +12,11 @@ into a decentralized compute marketplace.
 **Current Status:** Usenova MVP shipped — agent (service lifecycle, Docker, health checks,
 circuit breaker), remote deploy command channel, logs, SQLite agent registry, session auth;
 Stellar testnet integration (account linking, balance queries) and Soroban payment-escrow
-contract; Host-on-Usenova (managed fleet) is planned.
+contract. The fleet thin slice is also shipped: platform-agent registration with owner type
+and fleet labels, the control-plane scheduler with resource hints, deployment records with
+escrow linking, the CLI `--target remote|usenova` path, Docker resource limits and network
+policy, and operator-token authorization for deployment endpoints. Host-on-Usenova as a public
+managed fleet (per-user billing, public capacity, mainnet) is not yet a production offering.
 
 ## Key Features
 
@@ -72,7 +76,9 @@ See [docs/remote-deploy.md](docs/remote-deploy.md) for the command channel desig
 ## Quick Start
 
 > **What works today:** CLI, agent, control plane, remote command channel, and Stellar
-> testnet integration (account linking, balance queries, Soroban escrow contract).
+> testnet integration (account linking, balance queries, Soroban escrow contract), plus the
+> fleet thin slice (platform-agent registration, scheduler, deployment records,
+> `--target remote|usenova`, resource limits/network policy, operator-token authZ).
 > Packaged releases and the hosted fleet (Host-on-Usenova) are still forthcoming.
 
 ```bash
@@ -146,7 +152,17 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for deta
 - [x] Remote deploy command channel (poll-based, NAT-friendly)
 - [x] Stellar testnet account linking and balance queries
 - [x] Soroban payment-escrow contract (create, release, refund)
-- [ ] Host-on-Usenova (managed fleet / scheduler) — see [docs/host-on-usenova.md](docs/host-on-usenova.md)
+- [x] Platform-agent registration with owner type and fleet labels
+- [x] Control-plane scheduler with resource hints and health freshness
+- [x] Deployment records (create, list, get, escrow link)
+- [x] CLI `--target remote|usenova` path through the control plane
+- [x] Docker resource limits and network policy
+- [x] Operator-token authorization for deployment endpoints
+- [ ] Bootstrap runbook for operators (#55)
+- [ ] End-to-end remote deploy smoke test passing in CI (#54)
+- [ ] Image allowlist / dangerous-mount policy (#67)
+- [ ] Billing decisions (#53)
+- [ ] Public capacity advertisement (#52)
 - [ ] Mainnet Stellar support
 - [ ] Compute marketplace features
 

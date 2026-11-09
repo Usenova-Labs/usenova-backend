@@ -5,13 +5,13 @@
 
 ## TL;DR
 
-| | **BYOI (today)** | **Host-on-Usenova (planned)** |
-|---|---|---|
-| Who owns the machine | You | Usenova runs the fleet |
-| Who installs the agent | You | Usenova provisions it |
-| Who pays for compute | You (your cloud bill) | You pay Usenova per deploy |
-| Payment primitive | Stellar escrow (in progress) | Stellar escrow |
-| Status | Shipped | Planned |
+| | **BYOI (today)** | **Host-on-Usenova fleet primitives** | **Host-on-Usenova managed service** |
+|---|---|---|---|
+| Who owns the machine | You | Usenova platform agents | Usenova runs the fleet |
+| Who installs the agent | You | Platform team registers fleet agents | Usenova provisions it |
+| Who pays for compute | You (your cloud bill) | You (escrow per deploy) | You pay Usenova per deploy |
+| Payment primitive | Stellar escrow (in progress) | Stellar escrow | Stellar escrow |
+| Status | Shipped | Shipped (thin slice) | Planned |
 
 ---
 
@@ -106,8 +106,6 @@ existing foundation is the delta — not a rewrite.
 The following are **explicitly out of scope** until after the BYOI MVP is
 proven in production:
 
-- **Fleet scheduler** — no bin-packing, no affinity rules, no spot-instance
-  integration. Scheduling is a hard problem; the MVP proves the primitives first.
 - **Multi-tenant control plane** — the current control plane has a single
   operator token. Per-user accounts and authorization are a follow-up.
 - **Mainnet Stellar** — all payment flows use Stellar testnet. Mainnet
@@ -147,17 +145,23 @@ contract entrypoints and the Horizon balance API.
 
 ## Current focus
 
+The fleet thin slice is implemented: platform-agent registration with owner type
+and fleet labels, the control-plane scheduler with resource hints, deployment
+records with escrow linking, the CLI `--target remote|usenova` path, Docker
+resource limits and network policy, and operator-token authorization for
+deployment endpoints.
+
 The project is actively working on:
 
 1. Proving the BYOI path end-to-end (agent, CLI, control plane, Docker).
 2. Stellar testnet integration (account linking, balance queries, escrow).
 3. Hardening: session auth, circuit breaker, command channel reliability.
-4. Fleet primitives: the agent registry now records user vs platform
-   ownership, optional owner IDs, and filterable fleet labels.
+4. The remaining managed-service items: bootstrap runbook, end-to-end remote
+   deploy smoke test in CI, image allowlist / dangerous-mount policy, billing
+   decisions, and public capacity advertisement.
 
-Host-on-Usenova work will begin once the BYOI path is stable and the escrow
-contract has been reviewed. Contributions to the items above are the fastest
-path to enabling the fleet direction.
+Host-on-Usenova as a public managed fleet (per-user billing, public capacity,
+mainnet) remains planned; it is not yet a production offering.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for how to pick up an issue, and
 [GitHub Issues](https://github.com/Usenova-Labs/usenova-backend/issues) for
